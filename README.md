@@ -35,6 +35,7 @@ Edit `src/config.ts` — this is the only file you need to touch:
 
 ```ts
 export const config: ContrailConfig = {
+  namespace: "com.example",            // your reverse-domain namespace
   collections: {
     "community.lexicon.calendar.event": {
       relations: {
@@ -84,13 +85,13 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 
 | Endpoint | Description |
 |----------|-------------|
-| `{nsid}.getRecords` | List/filter records |
-| `{nsid}.getRecord` | Get single record by URI |
-| `{nsid}.getUsers` | List users by record count |
-| `{nsid}.getStats` | Collection statistics |
-| `contrail.admin.sync` | Discover + backfill (requires `ADMIN_SECRET`) |
-| `contrail.admin.getCursor` | Current cursor position |
-| `contrail.admin.getOverview` | All collections summary |
+| `{collection}.listRecords` | List/filter records |
+| `{collection}.getRecord` | Get single record by URI |
+| `{namespace}.getProfile` | Get a user's profile by DID or handle |
+| `{namespace}.admin.sync` | Discover + backfill (requires `ADMIN_SECRET`) |
+| `{namespace}.admin.getCursor` | Current cursor position |
+| `{namespace}.admin.getOverview` | All collections summary |
+| `{namespace}.admin.reset` | Delete all data (requires `ADMIN_SECRET`) |
 
 ### Query parameters
 
