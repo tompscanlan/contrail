@@ -243,7 +243,7 @@ function buildHydrateDefs(relationDefs: RelationDef[]): Record<string, any> {
           items: { type: "ref", ref: `#${recordDefName}` },
         };
       }
-      groupProperties["_other"] = {
+      groupProperties["other"] = {
         type: "array",
         items: { type: "ref", ref: `#${recordDefName}` },
       };

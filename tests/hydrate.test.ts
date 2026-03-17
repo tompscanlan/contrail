@@ -155,12 +155,12 @@ describe("resolveHydrates", () => {
     expect(result[eventUri].rsvps["going"]).toHaveLength(1);
   });
 
-  it("groups into '_other' when groupBy value is null", async () => {
+  it("groups into 'other' when groupBy value is null", async () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
 
     await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1", time_us: 1000 })]);
 
-    // Insert RSVP without a status field — groupBy "status" should fall back to "_other"
+    // Insert RSVP without a status field — groupBy "status" should fall back to "other"
     await applyEvents(db, [
       makeEvent({
         uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/r1",
@@ -181,6 +181,6 @@ describe("resolveHydrates", () => {
     const result = await resolveHydrates(db, relations, { rsvps: 10 }, [eventRow!]);
 
     expect(result[eventUri].rsvps).toBeDefined();
-    expect(result[eventUri].rsvps["_other"]).toHaveLength(1);
+    expect(result[eventUri].rsvps["other"]).toHaveLength(1);
   });
 });

@@ -70,7 +70,7 @@ export async function resolveHydrates(
         : [matchedValue];
 
       const groupValue = rel.groupBy
-        ? String(getNestedValue(record, rel.groupBy) ?? "_other")
+        ? String(getNestedValue(record, rel.groupBy) ?? "other")
         : "_flat";
 
       for (const parentUri of parentUris) {

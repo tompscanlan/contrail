@@ -157,7 +157,7 @@
             "ref": "#hydrateRsvpsRecord"
           }
         },
-        "_other": {
+        "other": {
           "type": "array",
           "items": {
             "type": "ref",
