@@ -57,7 +57,7 @@ export const config: ContrailConfig = {
 When you run `pnpm generate`, queryable fields are derived from each collection's lexicon:
 
 - **String fields** → equality filter (`?status=going`)
-- **Datetime/integer fields** → range filter (`?min=startsAt:2026-03-16`)
+- **Datetime/integer fields** → range filters (`?startsAtMin=2026-03-16&startsAtMax=2026-04-01`)
 - **StrongRef fields** → `.uri` equality filter (`?subjectUri=at://...`)
 
 You can override any auto-detected field by specifying `queryable` manually in config.
@@ -101,19 +101,13 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 | `actor` | `?actor=did:plc:...` or `?actor=alice.bsky.social` | Filter by DID or handle (triggers on-demand backfill) |
 | `profiles` | `?profiles=true` | Include profile + identity info keyed by DID |
 | `{field}` | `?status=going` | Equality filter on queryable string field |
-| `min` | `?min=startsAt:2026-03-16` | Range minimum (datetime/integer fields) or count minimum |
-| `max` | `?max=endsAt:2026-04-01` | Range maximum (datetime/integer fields) |
+| `{field}Min` | `?startsAtMin=2026-03-16` | Range minimum (datetime/integer fields) |
+| `{field}Max` | `?endsAtMax=2026-04-01` | Range maximum (datetime/integer fields) |
+| `{rel}CountMin` | `?rsvpsCountMin=10` | Minimum total relation count |
+| `{rel}{Group}CountMin` | `?rsvpsGoingCountMin=10` | Minimum relation count for a specific groupBy value |
 | `hydrate` | `?hydrate=rsvps:10` | Embed latest N related records per record |
 | `limit` | `?limit=25` | Page size (1-100, default 50) |
 | `cursor` | `?cursor=...` | Pagination cursor |
-
-**Count filters** use the same `min`/`max` syntax with the count type as key:
-
-```
-# events with 10+ "going" RSVPs, 
-# take care to parse the `#` character correctly in your HTTP client
-?min=community.lexicon.calendar.rsvp#going:10   
-```
 
 **Hydration** returns related records grouped by `groupBy` value:
 
@@ -125,8 +119,8 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 ### Examples (events)
 
 ```
-# Upcoming events with 10+ going, with RSVP records and profiles
-/xrpc/community.lexicon.calendar.event.getRecords?min=startsAt:2026-03-16&min=community.lexicon.calendar.rsvp#going:10&hydrate=rsvps:5&profiles=true
+# Upcoming events with 10+ going RSVPs, with RSVP records and profiles
+/xrpc/community.lexicon.calendar.event.getRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10&hydrate=rsvps:5&profiles=true
 
 # Events for a specific user (by handle)
 /xrpc/community.lexicon.calendar.event.getRecords?actor=alice.bsky.social&profiles=true

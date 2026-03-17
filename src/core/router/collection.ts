@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database, RecordRow, QueryableField } from "../types";
 import { getCollectionNames } from "../types";
-import { resolvedQueryable } from "../queryable.generated";
+import { resolvedQueryable, resolvedRelationsMap } from "../queryable.generated";
 import { queryRecords, getUsersByCollection } from "../db";
 import { backfillUser } from "../backfill";
 import { resolveHydrates } from "./hydrate";
@@ -37,26 +37,37 @@ export function registerCollectionRoutes(
       }
 
       const filters: Record<string, string> = {};
+      const rangeFilters: Record<string, { min?: string; max?: string }> = {};
       for (const [field, fieldConfig] of Object.entries(queryableFields)) {
-        if (fieldConfig.type === "range") continue;
-        const value = params.get(fieldToParam(field));
-        if (value) filters[field] = value;
+        const param = fieldToParam(field);
+        if (fieldConfig.type === "range") {
+          const min = params.get(`${param}Min`);
+          const max = params.get(`${param}Max`);
+          if (min || max) {
+            rangeFilters[field] = {};
+            if (min) rangeFilters[field].min = min;
+            if (max) rangeFilters[field].max = max;
+          }
+        } else {
+          const value = params.get(param);
+          if (value) filters[field] = value;
+        }
       }
 
-      const rangeFilters: Record<string, { min?: string; max?: string }> = {};
       const countFilters: Record<string, number> = {};
-      const rangeFields = new Set(
-        Object.entries(queryableFields)
-          .filter(([, c]) => c.type === "range")
-          .map(([f]) => f)
-      );
-      parseMinMaxParams(
-        params.getAll("min"),
-        params.getAll("max"),
-        rangeFields,
-        rangeFilters,
-        countFilters
-      );
+      const relMap = resolvedRelationsMap[collection] ?? {};
+      for (const [relName, rel] of Object.entries(relations)) {
+        const totalMin = parseIntParam(params.get(`${relName}CountMin`));
+        if (totalMin != null) countFilters[rel.collection] = totalMin;
+        const mapping = relMap[relName];
+        if (mapping) {
+          const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+          for (const [shortName, fullToken] of Object.entries(mapping.groups)) {
+            const val = parseIntParam(params.get(`${relName}${capitalize(shortName)}CountMin`));
+            if (val != null) countFilters[fullToken] = val;
+          }
+        }
+      }
 
       const result = await queryRecords(db, config, {
         collection,
@@ -78,21 +89,21 @@ export function registerCollectionRoutes(
 
       const formattedRecords: FormattedRecord[] = rows.map((row) => {
         const formatted = formatRecord(row);
-        if (row.counts) formatted.counts = row.counts;
+        flattenCounts(formatted, row.counts, collection, relations);
         const h = hydrates[row.uri];
         if (h) formatted.hydrates = h;
         return formatted;
       });
 
       const allDids = collectDids(rows, hydrates);
-      const profiles = wantProfiles
+      const profileMap = wantProfiles
         ? await resolveProfiles(db, config, allDids)
         : undefined;
 
       return c.json({
         records: formattedRecords,
         cursor: result.cursor,
-        ...(profiles ? { profiles } : {}),
+        ...(profileMap ? { profiles: Object.values(profileMap) } : {}),
       });
     });
 
@@ -118,7 +129,7 @@ export function registerCollectionRoutes(
       if (countRows.results?.length) {
         const counts: Record<string, number> = {};
         for (const cr of countRows.results) counts[cr.type] = cr.count;
-        formatted.counts = counts;
+        flattenCounts(formatted, counts, collection, relations);
       }
 
       const params = new URL(c.req.url).searchParams;
@@ -134,13 +145,13 @@ export function registerCollectionRoutes(
       if (h) formatted.hydrates = h;
 
       const allDids = collectDids([row], hydrates);
-      const profilesSingle = wantProfilesSingle
+      const profileMap = wantProfilesSingle
         ? await resolveProfiles(db, config, allDids)
         : undefined;
 
       return c.json({
         ...formatted,
-        ...(profilesSingle ? { profiles: profilesSingle } : {}),
+        ...(profileMap ? { profiles: Object.values(profileMap) } : {}),
       });
     });
 
@@ -181,28 +192,37 @@ export function registerCollectionRoutes(
   }
 }
 
-function parseMinMaxParams(
-  minValues: string[],
-  maxValues: string[],
-  rangeFields: Set<string>,
-  rangeFilters: Record<string, { min?: string; max?: string }>,
-  countFilters: Record<string, number>
+function flattenCounts(
+  formatted: FormattedRecord,
+  counts: Record<string, number> | undefined,
+  collection: string,
+  relations: Record<string, any>
 ): void {
-  for (const [side, values] of [
-    ["min", minValues],
-    ["max", maxValues],
-  ] as const) {
-    for (const raw of values) {
-      const sep = raw.indexOf(":");
-      if (sep === -1) continue;
-      const key = raw.slice(0, sep);
-      const val = raw.slice(sep + 1);
-      if (rangeFields.has(key)) {
-        (rangeFilters[key] ??= {})[side] = val;
-      } else if (side === "min") {
-        const num = parseInt(val, 10);
-        if (!isNaN(num)) countFilters[key] = num;
-      }
+  if (!counts) return;
+  const relMap = resolvedRelationsMap[collection] ?? {};
+  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  // Build reverse lookups: collection NSID → relName (for totals), full token → field name (for groups)
+  const collectionToRelName: Record<string, string> = {};
+  const tokenToField: Record<string, string> = {};
+  for (const [relName, mapping] of Object.entries(relMap)) {
+    collectionToRelName[mapping.collection] = relName;
+    for (const [shortName, fullToken] of Object.entries(mapping.groups)) {
+      tokenToField[fullToken] = `${relName}${capitalize(shortName)}Count`;
+    }
+  }
+  // Also map relations without groupBy (no entry in relMap)
+  for (const [relName, rel] of Object.entries(relations)) {
+    if (!collectionToRelName[rel.collection]) {
+      collectionToRelName[rel.collection] = relName;
+    }
+  }
+
+  for (const [type, count] of Object.entries(counts)) {
+    if (collectionToRelName[type]) {
+      formatted[`${collectionToRelName[type]}Count`] = count;
+    } else if (tokenToField[type]) {
+      formatted[tokenToField[type]] = count;
     }
   }
 }

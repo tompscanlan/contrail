@@ -45,7 +45,7 @@ function buildCountStatements(
     const targetUri = getNestedValue(record, getRelationField(rel));
     if (!targetUri) continue;
 
-    const types = ["_total"];
+    const types = [rel.collection];
     if (rel.groupBy) {
       const groupValue = getNestedValue(record, rel.groupBy);
       if (groupValue != null) types.push(String(groupValue));

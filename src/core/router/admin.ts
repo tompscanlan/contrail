@@ -16,6 +16,10 @@ export function registerAdminRoutes(
       const auth = c.req.header("Authorization");
       if (auth !== `Bearer ${adminSecret}`)
         return c.json({ error: "Unauthorized" }, 401);
+    } else {
+      const url = new URL(c.req.url);
+      if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1")
+        return c.json({ error: "ADMIN_SECRET not configured" }, 403);
     }
     await next();
   };
@@ -118,5 +122,11 @@ export function registerAdminRoutes(
       remaining: remaining?.count ?? 0,
       done: discoveryDone && (remaining?.count ?? 0) === 0,
     });
+  });
+
+  app.get("/xrpc/contrail.admin.reset", requireAdmin, async (c) => {
+    const tables = ["records", "counts", "backfills", "discovery", "cursor", "identities"];
+    await db.batch(tables.map((t) => db.prepare(`DELETE FROM ${t}`)));
+    return c.json({ ok: true });
   });
 }

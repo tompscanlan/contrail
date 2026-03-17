@@ -13,4 +13,5 @@ export const config: ContrailConfig = {
     "community.lexicon.calendar.rsvp": {},
     "app.blento.card": {}
   },
+  profiles: ["app.bsky.actor.profile", "app.blento.profile"],
 };

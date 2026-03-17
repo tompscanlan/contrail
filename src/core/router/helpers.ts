@@ -8,7 +8,6 @@ export interface FormattedRecord {
   cid: string | null;
   record: any;
   time_us: number;
-  counts?: Record<string, number>;
   hydrates?: Record<string, Record<string, any[]>>;
   [key: string]: any;
 }

@@ -95,6 +95,29 @@ function analyzeProperties(
   return result;
 }
 
+// Extract knownValues for a field from a collection's lexicon
+function getKnownValues(collection: string, fieldName: string): string[] {
+  const filePath = findCollectionLexicon(collection);
+  if (!filePath) return [];
+  try {
+    const doc = JSON.parse(readFileSync(filePath, "utf-8"));
+    const props = doc.defs?.main?.record?.properties;
+    if (!props) return [];
+    const field = props[fieldName];
+    if (!field) return [];
+    if (Array.isArray(field.knownValues)) return field.knownValues;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// Default mapping: "community.lexicon.calendar.rsvp#going" → "going"
+function tokenShortName(token: string): string {
+  const hash = token.indexOf("#");
+  return hash !== -1 ? token.slice(hash + 1) : token;
+}
+
 // Clean generated dir (user-provided lexicons/ is untouched)
 rmSync(GENERATED_DIR, { recursive: true, force: true });
 
@@ -125,21 +148,97 @@ function writeLexicon(nsid: string, doc: object) {
 }
 
 // Build record output shape, optionally typing the record field
-function buildRecordDef(collectionRef: string | null) {
+// countFields: e.g. [{ name: "rsvpsTotal", description: "..." }, { name: "rsvpsGoing", ... }]
+interface CountField {
+  name: string;
+  description: string;
+}
+
+function buildRecordDef(collectionRef: string | null, countFields?: CountField[], hasRelations?: boolean) {
+  const properties: Record<string, any> = {
+    uri: { type: "string", format: "at-uri" },
+    did: { type: "string", format: "did" },
+    collection: { type: "string", format: "nsid" },
+    rkey: { type: "string" },
+    cid: { type: "string" },
+    record: collectionRef
+      ? { type: "ref", ref: collectionRef }
+      : { type: "unknown" },
+    time_us: { type: "integer" },
+  };
+
+  if (countFields) {
+    for (const cf of countFields) {
+      properties[cf.name] = { type: "integer", description: cf.description };
+    }
+  }
+
+  if (hasRelations) {
+    properties.hydrates = {
+      type: "unknown",
+      description: "Hydrated related records, grouped by relation name and groupBy value",
+    };
+  }
+
   return {
     type: "object",
     required: ["uri", "did", "collection", "rkey", "time_us"],
-    properties: {
-      uri: { type: "string", format: "at-uri" },
-      did: { type: "string", format: "did" },
-      collection: { type: "string", format: "nsid" },
-      rkey: { type: "string" },
-      cid: { type: "string" },
-      record: collectionRef
-        ? { type: "ref", ref: collectionRef }
-        : { type: "unknown" },
-      time_us: { type: "integer" },
+    properties,
+  };
+}
+
+// Read the inner record object schema from a collection's lexicon
+function getRecordObjectSchema(collection: string): any | null {
+  const filePath = findCollectionLexicon(collection);
+  if (!filePath) return null;
+  try {
+    const doc = JSON.parse(readFileSync(filePath, "utf-8"));
+    const main = doc.defs?.main;
+    if (main?.type === "record" && main.record) return main.record;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function profileDefs() {
+  const profiles = config.profiles ?? ["app.bsky.actor.profile"];
+  const extraDefs: Record<string, any> = {};
+  const objectRefs: string[] = [];
+
+  for (const col of profiles) {
+    const schema = getRecordObjectSchema(col);
+    if (!schema) continue;
+    // Create a local def name from the NSID, e.g. "app.bsky.actor.profile" → "appBskyActorProfile"
+    const defName = col.split(".").map((p, i) => i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)).join("");
+    extraDefs[defName] = schema;
+    objectRefs.push(`#${defName}`);
+  }
+
+  let recordField: any;
+  if (objectRefs.length === 1) {
+    recordField = { type: "ref", ref: objectRefs[0] };
+  } else if (objectRefs.length > 1) {
+    recordField = { type: "union", refs: objectRefs };
+  } else {
+    recordField = { type: "unknown" };
+  }
+
+  return {
+    profileEntry: {
+      type: "object",
+      required: ["did"],
+      properties: {
+        did: { type: "string", format: "did" },
+        handle: { type: "string" },
+        uri: { type: "string", format: "at-uri" },
+        collection: { type: "string", format: "nsid" },
+        rkey: { type: "string" },
+        cid: { type: "string" },
+        record: recordField,
+      },
     },
+    ...extraDefs,
   };
 }
 
@@ -238,12 +337,35 @@ writeLexicon("contrail.admin.sync", {
   },
 });
 
+writeLexicon("contrail.admin.reset", {
+  lexicon: 1,
+  id: "contrail.admin.reset",
+  defs: {
+    main: {
+      type: "query",
+      description: "Delete all data from all tables",
+      output: {
+        encoding: "application/json",
+        schema: {
+          type: "object",
+          required: ["ok"],
+          properties: {
+            ok: { type: "boolean" },
+          },
+        },
+      },
+    },
+  },
+});
+
 // --- Per-collection endpoints ---
 
 console.log("Generating collection endpoints...");
 
 // Collect resolved queryable fields for all collections
 const resolvedQueryable: Record<string, Record<string, { type?: "range" }>> = {};
+// Collect resolved relation mappings (short name → full token) for runtime
+const resolvedRelations: Record<string, Record<string, { collection: string; groupBy: string; groups: Record<string, string> }>> = {};
 
 for (const [collection, colConfig] of Object.entries(config.collections)) {
   const collectionRef = getCollectionLexiconRef(collection);
@@ -268,39 +390,75 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
   const getRecordsParamProps: Record<string, any> = {
     limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
     cursor: { type: "string" },
-    did: { type: "string", format: "did" },
-    include: {
-      type: "string",
-      description: "Comma-separated include names",
-    },
+    actor: { type: "string", format: "at-identifier", description: "Filter by DID or handle (triggers on-demand backfill)" },
+    profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
+    hydrate: { type: "string", description: "Embed related records, as relName:limit (e.g. rsvps:5). Repeatable." },
   };
 
   for (const [field, fieldConfig] of Object.entries(merged)) {
-    if (fieldConfig.type !== "range") {
-      getRecordsParamProps[fieldToParam(field)] = {
+    const param = fieldToParam(field);
+    if (fieldConfig.type === "range") {
+      getRecordsParamProps[`${param}Min`] = {
+        type: "string",
+        description: `Minimum value for ${field}`,
+      };
+      getRecordsParamProps[`${param}Max`] = {
+        type: "string",
+        description: `Maximum value for ${field}`,
+      };
+    } else {
+      getRecordsParamProps[param] = {
         type: "string",
         description: `Filter by ${field}`,
       };
     }
   }
 
-  getRecordsParamProps["min"] = {
-    type: "string",
-    description: "Min filter as field:value (range fields or count types). Repeatable.",
-  };
-  getRecordsParamProps["max"] = {
-    type: "string",
-    description: "Max filter as field:value (range fields). Repeatable.",
-  };
+  // Build count fields and params from relations + knownValues
+  const countFields: CountField[] = [];
+  for (const [relName, rel] of Object.entries(colConfig.relations ?? {})) {
+    // Total count
+    const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+    countFields.push({ name: `${relName}Count`, description: `Total ${relName} count` });
+    getRecordsParamProps[`${relName}CountMin`] = {
+      type: "integer",
+      description: `Minimum total ${relName} count`,
+    };
 
-  for (const relName of Object.keys(colConfig.relations ?? {})) {
     getRecordsParamProps[`${relName}Preview`] = {
       type: "integer",
       minimum: 1,
       maximum: 50,
       description: `Number of ${relName} previews per record`,
     };
+
+    // Per-group counts from knownValues
+    if (rel.groupBy) {
+      const knownValues = getKnownValues(rel.collection, rel.groupBy);
+      const groupMapping: Record<string, string> = {};
+      for (const token of knownValues) {
+        const shortName = tokenShortName(token);
+        groupMapping[shortName] = token;
+        countFields.push({
+          name: `${relName}${capitalize(shortName)}Count`,
+          description: `${relName} count where ${rel.groupBy} = ${shortName}`,
+        });
+        getRecordsParamProps[`${relName}${capitalize(shortName)}CountMin`] = {
+          type: "integer",
+          description: `Minimum ${relName} count where ${rel.groupBy} = ${shortName}`,
+        };
+      }
+      // Store mapping for runtime use
+      if (!resolvedRelations[collection]) resolvedRelations[collection] = {};
+      resolvedRelations[collection][relName] = {
+        collection: rel.collection,
+        groupBy: rel.groupBy,
+        groups: groupMapping,
+      };
+    }
   }
+
+  const hasRelations = Object.keys(colConfig.relations ?? {}).length > 0;
 
   writeLexicon(`${collection}.getRecords`, {
     lexicon: 1,
@@ -321,26 +479,22 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
             properties: {
               records: { type: "array", items: { type: "ref", ref: "#record" } },
               cursor: { type: "string" },
+              profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } },
             },
           },
         },
       },
-      record: buildRecordDef(collectionRef),
+      record: buildRecordDef(collectionRef, countFields, hasRelations),
+      ...profileDefs(),
     },
   });
 
   // --- getRecord ---
   const getRecordParamProps: Record<string, any> = {
     uri: { type: "string", format: "at-uri", description: "AT URI of the record" },
+    profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
+    hydrate: { type: "string", description: "Embed related records, as relName:limit (e.g. rsvps:5). Repeatable." },
   };
-  for (const relName of Object.keys(colConfig.relations ?? {})) {
-    getRecordParamProps[`${relName}Preview`] = {
-      type: "integer",
-      minimum: 1,
-      maximum: 50,
-      description: `Number of ${relName} previews per group`,
-    };
-  }
 
   writeLexicon(`${collection}.getRecord`, {
     lexicon: 1,
@@ -356,10 +510,17 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
         },
         output: {
           encoding: "application/json",
-          schema: { type: "ref", ref: "#record" },
+          schema: {
+            type: "object",
+            required: ["uri", "did", "collection", "rkey", "time_us"],
+            properties: {
+              ...buildRecordDef(collectionRef, countFields, hasRelations).properties,
+              profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } },
+            },
+          },
         },
       },
-      record: buildRecordDef(collectionRef),
+      ...profileDefs(),
     },
   });
 
@@ -506,8 +667,9 @@ for (const file of pulledFiles) {
   }
 }
 
-// Merge: collection NSIDs + transitive deps (excluding com.atproto.* which comes from imports)
-const pullNsids = new Set(collectionNsids);
+// Merge: collection NSIDs + profile NSIDs + transitive deps (excluding com.atproto.* which comes from imports)
+const profileNsids = config.profiles ?? ["app.bsky.actor.profile"];
+const pullNsids = new Set([...collectionNsids, ...profileNsids]);
 for (const ref of allRefs) {
   if (!ref.startsWith("com.atproto.")) {
     pullNsids.add(ref);
@@ -543,6 +705,14 @@ const queryableContent = `// Auto-generated — do not edit. Run \`pnpm generate
 import type { QueryableField } from "./types";
 
 export const resolvedQueryable: Record<string, Record<string, QueryableField>> = ${JSON.stringify(resolvedQueryable, null, 2)};
+
+export interface ResolvedRelation {
+  collection: string;
+  groupBy: string;
+  groups: Record<string, string>; // shortName → full token value
+}
+
+export const resolvedRelationsMap: Record<string, Record<string, ResolvedRelation>> = ${JSON.stringify(resolvedRelations, null, 2)};
 `;
 
 writeFileSync(join(ROOT_DIR, "src", "core", "queryable.generated.ts"), queryableContent);
