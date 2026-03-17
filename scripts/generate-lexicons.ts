@@ -429,6 +429,38 @@ writeLexicon("contrail.admin.reset", {
   },
 });
 
+// --- getProfile endpoint ---
+
+writeLexicon("contrail.getProfile", {
+  lexicon: 1,
+  id: "contrail.getProfile",
+  defs: {
+    main: {
+      type: "query",
+      description: "Get a user's profile by DID or handle",
+      parameters: {
+        type: "params",
+        required: ["actor"],
+        properties: {
+          actor: {
+            type: "string",
+            format: "at-identifier",
+            description: "DID or handle of the user",
+          },
+        },
+      },
+      output: {
+        encoding: "application/json",
+        schema: {
+          type: "ref",
+          ref: "#profileEntry",
+        },
+      },
+    },
+    ...profileDefs(),
+  },
+});
+
 // --- Per-collection endpoints ---
 
 console.log("Generating collection endpoints...");
