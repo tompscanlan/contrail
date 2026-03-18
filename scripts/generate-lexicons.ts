@@ -162,10 +162,16 @@ interface RelationDef {
   groups: Record<string, string>; // shortName → full token
 }
 
+interface ReferenceDef {
+  refName: string;
+  collection: string;
+}
+
 function buildRecordDef(
   collectionRef: string | null,
   countFields?: CountField[],
-  relationDefs?: RelationDef[]
+  relationDefs?: RelationDef[],
+  referenceDefs?: ReferenceDef[]
 ) {
   const properties: Record<string, any> = {
     uri: { type: "string", format: "at-uri" },
@@ -202,11 +208,48 @@ function buildRecordDef(
     }
   }
 
+  if (referenceDefs && referenceDefs.length > 0) {
+    for (const rd of referenceDefs) {
+      const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+      properties[rd.refName] = {
+        type: "ref",
+        ref: `#ref${capitalize(rd.refName)}Record`,
+      };
+    }
+  }
+
   return {
     type: "object",
     required: ["uri", "did", "collection", "rkey", "time_us"],
     properties,
   };
+}
+
+function buildReferenceDefs(referenceDefs: ReferenceDef[]): Record<string, any> {
+  const defs: Record<string, any> = {};
+  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  for (const rd of referenceDefs) {
+    const refCollectionRef = getCollectionLexiconRef(rd.collection);
+    const recordDefName = `ref${capitalize(rd.refName)}Record`;
+    defs[recordDefName] = {
+      type: "object",
+      required: ["uri", "did", "collection", "rkey", "time_us"],
+      properties: {
+        uri: { type: "string", format: "at-uri" },
+        did: { type: "string", format: "did" },
+        collection: { type: "string", format: "nsid" },
+        rkey: { type: "string" },
+        cid: { type: "string" },
+        record: refCollectionRef
+          ? { type: "ref", ref: refCollectionRef }
+          : { type: "unknown" },
+        time_us: { type: "integer" },
+      },
+    };
+  }
+
+  return defs;
 }
 
 function buildHydrateDefs(relationDefs: RelationDef[]): Record<string, any> {
@@ -575,6 +618,12 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
     });
   }
 
+  // Build reference defs
+  const referenceDefs: ReferenceDef[] = [];
+  for (const [refName, ref] of Object.entries(colConfig.references ?? {})) {
+    referenceDefs.push({ refName, collection: ref.collection });
+  }
+
   // Add per-reference hydrate params (e.g. hydrateEvent=true)
   for (const refName of Object.keys(colConfig.references ?? {})) {
     const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -607,6 +656,7 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
   }
 
   const hydrateDefs = buildHydrateDefs(relationDefs);
+  const refDefs = buildReferenceDefs(referenceDefs);
 
   writeLexicon(`${collection}.listRecords`, {
     lexicon: 1,
@@ -632,8 +682,9 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
           },
         },
       },
-      record: buildRecordDef(collectionRef, countFields, relationDefs),
+      record: buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs),
       ...hydrateDefs,
+      ...refDefs,
       ...profileDefs(),
     },
   });
@@ -682,13 +733,14 @@ for (const [collection, colConfig] of Object.entries(config.collections)) {
             type: "object",
             required: ["uri", "did", "collection", "rkey", "time_us"],
             properties: {
-              ...buildRecordDef(collectionRef, countFields, relationDefs).properties,
+              ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties,
               profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } },
             },
           },
         },
       },
       ...hydrateDefs,
+      ...refDefs,
       ...profileDefs(),
     },
   });
