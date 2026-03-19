@@ -101,7 +101,8 @@ export async function backfillUser(
   try {
     client = await withRetry(
       () => getClient(did as Did, db),
-      `getClient(${did})`
+      `getClient(${did})`,
+      1
     );
   } catch (err) {
     await markFailed(db, did, collection, String(err));

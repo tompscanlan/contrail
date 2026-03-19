@@ -6,6 +6,9 @@ import { refreshStaleIdentities } from "./identity";
 
 const BATCH_SIZE = 50;
 
+// Cache known DIDs in memory across ingest cycles (survives within the same Worker isolate)
+let cachedKnownDids: Set<string> | undefined;
+
 export async function ingestEvents(
   config: ContrailConfig,
   cursor: number | null,
@@ -103,10 +106,17 @@ export async function runIngestCycle(
   let knownDids: Set<string> | undefined;
 
   if (dependentCollections.length > 0) {
-    const result = await db
-      .prepare("SELECT did FROM identities")
-      .all<{ did: string }>();
-    knownDids = new Set((result.results ?? []).map((r) => r.did));
+    if (cachedKnownDids) {
+      knownDids = cachedKnownDids;
+      console.log(`Using cached known DIDs (${knownDids.size} users)`);
+    } else {
+      const result = await db
+        .prepare("SELECT did FROM identities")
+        .all<{ did: string }>();
+      knownDids = new Set((result.results ?? []).map((r) => r.did));
+      cachedKnownDids = knownDids;
+      console.log(`Loaded ${knownDids.size} known DIDs from database`);
+    }
   }
 
   const { events, lastCursor } = await ingestEvents(
