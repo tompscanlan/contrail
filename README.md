@@ -13,8 +13,8 @@ Define collections — get automatic Jetstream ingestion, PDS backfill, user dis
 pnpm install
 # Edit src/config.ts with your collections
 pnpm generate:pull   # pull lexicons from network, auto-detect fields, generate types
-pnpm dev:auto        # start wrangler dev with auto-ingestion
-pnpm sync            # discover users + backfill records from PDS
+pnpm dev:auto        # start wrangler dev with auto-ingestion, leave running while you sync
+pnpm sync            # in a different terminal, discover users + backfill records from PDS
 ```
 
 ### Production
@@ -216,13 +216,14 @@ import { defineLexiconConfig } from "@atcute/lex-cli";
 export default defineLexiconConfig({
   outdir: "src/lexicon-types/",
   imports: ["@atcute/atproto"],
+  files: ["lexicons/**/*.json"],
   pull: {
     outdir: "lexicons/",
     sources: [
       {
         type: "git",
         remote: "https://github.com/USER/REPO.git", // the Contrail instance repo
-        pattern: ["lexicons-generated/**/*.json", "lexicons-pulled/**/*.json"],
+        pattern: ["lexicons-generated/**/*.json", "lexicons-pulled/**/*.json", "lexicons/**/*.json"],
       },
     ],
   },
@@ -241,9 +242,9 @@ Import the generated types (side-effect import registers them with `@atcute/clie
 
 ```ts
 import "./lexicon-types/index.js"; // registers ambient types
-import { XRPC } from "@atcute/client";
+import { Client } from "@atcute/client";
 
-const rpc = new XRPC({ handler: /* your handler */ });
+const rpc = new Client({ handler: /* your handler */ });
 
 const { data } = await rpc.get("community.lexicon.calendar.event.getRecords", {
   params: { status: "going", limit: 10 }, // typed params
