@@ -134,6 +134,24 @@ export async function applyEvents(
 ): Promise<void> {
   if (events.length === 0) return;
 
+  // Look up existing records so we can skip duplicate count updates on replayed events.
+  // A create/update with the same CID is a replay; a delete for a missing URI is a replay.
+  const existingCids = new Map<string, string | null>();
+  if (config) {
+    const uris = events.map((e) => e.uri);
+    for (let i = 0; i < uris.length; i += 50) {
+      const chunk = uris.slice(i, i + 50);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = await db
+        .prepare(`SELECT uri, cid FROM records WHERE uri IN (${placeholders})`)
+        .bind(...chunk)
+        .all<{ uri: string; cid: string | null }>();
+      for (const row of rows.results ?? []) {
+        existingCids.set(row.uri, row.cid);
+      }
+    }
+  }
+
   const upsertStmt = db.prepare(
     "INSERT INTO records (uri, did, collection, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at"
   );
@@ -160,7 +178,18 @@ export async function applyEvents(
     }
 
     if (config) {
-      batch.push(...buildCountStatements(db, e, config));
+      // Skip count updates for replayed events:
+      // - create/update where the record already exists with the same CID
+      // - delete where the record doesn't exist
+      const existing = existingCids.get(e.uri);
+      const isReplay =
+        e.operation === "delete"
+          ? existing === undefined
+          : existing === e.cid;
+
+      if (!isReplay) {
+        batch.push(...buildCountStatements(db, e, config));
+      }
       batch.push(...buildFtsStatements(db, e, config));
     }
   }

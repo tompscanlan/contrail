@@ -144,8 +144,18 @@ export async function runIngestCycle(
   }
 
   if (lastCursor !== null) {
-    await saveCursor(db, lastCursor);
-    console.log(`Saved cursor: ${lastCursor}`);
+    // Use the later of the subscription cursor and the current time, so the
+    // cursor always reaches the present even when no events were received.
+    const nowUs = Date.now() * 1000;
+    const effectiveCursor = Math.max(lastCursor, nowUs);
+
+    // Roll back cursor by 60s so the next cycle replays a small window.
+    // This guards against missed events when switching between Jetstream instances
+    // or out-of-order delivery. Duplicate events are handled safely in applyEvents.
+    const safetyMarginUs = 60_000_000;
+    const safeCursor = Math.max(0, effectiveCursor - safetyMarginUs);
+    await saveCursor(db, safeCursor);
+    console.log(`Saved cursor: ${safeCursor} (rolled back 60s from ${effectiveCursor})`);
   }
 
   console.log(`Ingestion complete. Stored ${events.length} events.`);
