@@ -244,11 +244,13 @@ Import the generated types (side-effect import registers them with `@atcute/clie
 import "./lexicon-types/index.js"; // registers ambient types
 import { Client } from "@atcute/client";
 
-const rpc = new Client({ handler: /* your handler */ });
+const rpc = new Client({ handler: simpleFetchHandler({ service: /* your contrail url */ }) });
 
-const { data } = await rpc.get("community.lexicon.calendar.event.getRecords", {
+const response = await rpc.get("community.lexicon.calendar.event.getRecords", {
   params: { status: "going", limit: 10 }, // typed params
 });
 
-data.records // typed as Record[]
+if (response.ok) {
+	console.log(response.data.records); // typed
+}
 ```
