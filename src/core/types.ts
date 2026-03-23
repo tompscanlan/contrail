@@ -24,6 +24,8 @@ export interface RelationConfig {
   groupBy?: string;
   /** Enable materialized count columns on the parent. Defaults to true. */
   count?: boolean;
+  /** Pre-resolved group mappings: shortName → full token (e.g. { going: "community.lexicon.calendar.rsvp#going" }). Auto-computed from groupBy if omitted. */
+  groups?: Record<string, string>;
 }
 
 /** A forward reference: this collection's records point at another collection. */
@@ -85,6 +87,12 @@ export const DEFAULT_RELAYS = [
   "https://relay1.us-east.bsky.network"
 ];
 
+export interface Logger {
+  log(...args: any[]): void;
+  warn(...args: any[]): void;
+  error(...args: any[]): void;
+}
+
 export interface ContrailConfig {
   namespace: string;
   collections: Record<string, CollectionConfig>;
@@ -92,12 +100,29 @@ export interface ContrailConfig {
   relays?: string[];
   jetstreams?: string[];
   feeds?: Record<string, FeedConfig>;
+  logger?: Logger;
+}
+
+export interface ResolvedRelation {
+  collection: string;
+  groupBy: string;
+  groups: Record<string, string>; // shortName → full token value
+}
+
+export interface ResolvedMaps {
+  queryable: Record<string, Record<string, QueryableField>>;
+  relations: Record<string, Record<string, ResolvedRelation>>;
+}
+
+/** Config after resolveConfig() — has computed queryable/relation maps attached. */
+export interface ResolvedContrailConfig extends ContrailConfig {
+  _resolved: ResolvedMaps;
 }
 
 /**
- * Resolve config: apply defaults and auto-add profile collections.
+ * Resolve config: apply defaults, auto-add profile collections, compute queryable maps.
  */
-export function resolveConfig(config: ContrailConfig): ContrailConfig {
+export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
   const profiles = config.profiles ?? DEFAULT_PROFILES;
   const collections = { ...config.collections };
   for (const col of profiles) {
@@ -115,13 +140,47 @@ export function resolveConfig(config: ContrailConfig): ContrailConfig {
     }
   }
 
-  return {
+  const base = {
     ...config,
     collections,
     profiles,
     jetstreams: config.jetstreams ?? DEFAULT_JETSTREAMS,
     relays: config.relays ?? DEFAULT_RELAYS,
+    logger: config.logger ?? console,
   };
+
+  return {
+    ...base,
+    _resolved: _resolveQueryableMaps(base),
+  };
+}
+
+function _resolveQueryableMaps(config: ContrailConfig): ResolvedMaps {
+  const queryable: Record<string, Record<string, QueryableField>> = {};
+  const relations: Record<string, Record<string, ResolvedRelation>> = {};
+
+  for (const [collection, colConfig] of Object.entries(config.collections)) {
+    if (colConfig.queryable) {
+      queryable[collection] = colConfig.queryable;
+    }
+
+    if (colConfig.relations) {
+      for (const [relName, rel] of Object.entries(colConfig.relations)) {
+        if (!rel.groupBy) continue;
+        const groups: Record<string, string> = rel.groups ? { ...rel.groups } : {};
+        if (Object.keys(groups).length > 0) {
+          if (!relations[collection]) relations[collection] = {};
+          relations[collection][relName] = {
+            collection: rel.collection,
+            groupBy: rel.groupBy,
+            groups,
+          };
+        }
+      }
+    }
+  }
+
+  return { queryable, relations };
 }
 
 export function getFeedFollowCollections(config: ContrailConfig): string[] {

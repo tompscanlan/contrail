@@ -1,5 +1,5 @@
 import { JetstreamSubscription } from "@atcute/jetstream";
-import type { ContrailConfig, IngestEvent, Database } from "./types";
+import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
 import { getCollectionNames, getDependentCollections, DEFAULT_FEED_MAX_ITEMS } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
@@ -12,12 +12,17 @@ let schemaInitialized = false;
 let lastFeedPruneMs = 0;
 const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
+function getLogger(config: ContrailConfig): Logger {
+  return config.logger ?? console;
+}
+
 export async function ingestEvents(
   config: ContrailConfig,
   cursor: number | null,
   safetyTimeoutMs: number = 25_000,
   knownDids?: Set<string>
 ): Promise<{ events: IngestEvent[]; lastCursor: number | null }> {
+  const log = getLogger(config);
   const startTimeUs = Date.now() * 1000;
   const deadline = Date.now() + safetyTimeoutMs;
   const collected: IngestEvent[] = [];
@@ -31,15 +36,15 @@ export async function ingestEvents(
     wantedCollections: collections,
     ...(cursor !== null ? { cursor } : {}),
     onConnectionOpen() {
-      console.log("Connected to Jetstream");
+      log.log("Connected to Jetstream");
     },
     onConnectionClose(event) {
-      console.log(
+      log.log(
         `Disconnected from Jetstream: ${event.code} ${event.reason}`
       );
     },
     onConnectionError(event) {
-      console.error("Jetstream error:", event.error);
+      log.error("Jetstream error:", event.error);
     },
   });
 
@@ -75,12 +80,12 @@ export async function ingestEvents(
     }
 
     if (event.time_us >= startTimeUs) {
-      console.log("Caught up to present, stopping ingestion");
+      log.log("Caught up to present, stopping ingestion");
       break;
     }
 
     if (Date.now() >= deadline) {
-      console.log("Safety timeout reached, stopping ingestion");
+      log.log("Safety timeout reached, stopping ingestion");
       break;
     }
   }
@@ -95,6 +100,8 @@ export async function runIngestCycle(
   config: ContrailConfig,
   timeoutMs: number = 25_000
 ): Promise<void> {
+  const log = getLogger(config);
+
   if (!schemaInitialized) {
     await initSchema(db, config);
     schemaInitialized = true;
@@ -103,7 +110,7 @@ export async function runIngestCycle(
   const cursor = await getLastCursor(db);
   const collections = getCollectionNames(config);
 
-  console.log(
+  log.log(
     `Starting ingestion. Cursor: ${cursor ?? "none"}, Collections: ${collections.join(", ")}`
   );
 
@@ -114,14 +121,14 @@ export async function runIngestCycle(
   if (dependentCollections.length > 0) {
     if (cachedKnownDids) {
       knownDids = cachedKnownDids;
-      console.log(`Using cached known DIDs (${knownDids.size} users)`);
+      log.log(`Using cached known DIDs (${knownDids.size} users)`);
     } else {
       const result = await db
         .prepare("SELECT did FROM identities")
         .all<{ did: string }>();
       knownDids = new Set((result.results ?? []).map((r) => r.did));
       cachedKnownDids = knownDids;
-      console.log(`Loaded ${knownDids.size} known DIDs from database`);
+      log.log(`Loaded ${knownDids.size} known DIDs from database`);
     }
   }
 
@@ -132,7 +139,7 @@ export async function runIngestCycle(
     knownDids
   );
 
-  console.log(`Received ${events.length} events from Jetstream`);
+  log.log(`Received ${events.length} events from Jetstream`);
 
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
@@ -145,13 +152,13 @@ export async function runIngestCycle(
     try {
       await refreshStaleIdentities(db, uniqueDids);
     } catch (err) {
-      console.warn(`Identity refresh failed: ${err}`);
+      log.warn(`Identity refresh failed: ${err}`);
     }
   }
 
   if (lastCursor !== null) {
     await saveCursor(db, lastCursor);
-    console.log(`Saved cursor: ${lastCursor}`);
+    log.log(`Saved cursor: ${lastCursor}`);
   }
 
   // Prune feed items hourly
@@ -160,9 +167,9 @@ export async function runIngestCycle(
       ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
     );
     const pruned = await pruneFeedItems(db, maxItems);
-    if (pruned > 0) console.log(`Pruned ${pruned} old feed items`);
+    if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
     lastFeedPruneMs = Date.now();
   }
 
-  console.log(`Ingestion complete. Stored ${events.length} events.`);
+  log.log(`Ingestion complete. Stored ${events.length} events.`);
 }

@@ -1,5 +1,5 @@
 import type { Did } from "@atcute/lexicons";
-import type { Database } from "./types";
+import type { Database, Logger } from "./types";
 import { isDid, isHandle } from "@atcute/lexicons/syntax";
 import { resolvePDS } from "./client";
 
@@ -82,8 +82,8 @@ export async function resolveIdentities(
     try {
       const identity = await fetchAndSave(db, did);
       map.set(did, identity);
-    } catch (err) {
-      console.warn(`Failed to resolve identity for ${did}: ${err}`);
+    } catch {
+      // Silently skip unresolvable identities
     }
   }
 
@@ -152,8 +152,8 @@ export async function refreshStaleIdentities(
   for (const did of toRefresh) {
     try {
       await fetchAndSave(db, did);
-    } catch (err) {
-      console.warn(`Failed to refresh identity for ${did}: ${err}`);
+    } catch {
+      // Silently skip unresolvable identities
     }
   }
 }

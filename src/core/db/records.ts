@@ -1,5 +1,6 @@
 import type {
   ContrailConfig,
+  ResolvedContrailConfig,
   RelationConfig,
   Database,
   Statement,
@@ -8,7 +9,6 @@ import type {
   RecordSource,
 } from "../types";
 import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections, recordsTableName } from "../types";
-import { resolvedRelationsMap } from "../queryable.generated";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 
 // --- Counts ---
@@ -90,9 +90,9 @@ function buildCountStatements(
 
       // Grouped counts
       if (rel.groupBy) {
-        const mapping = (resolvedRelationsMap as Record<string, any>)[parentCollection]?.[relationName];
+        const mapping = (config as ResolvedContrailConfig)._resolved?.relations[parentCollection]?.[relationName];
         if (mapping?.groups) {
-          for (const [, fullToken] of Object.entries(mapping.groups as Record<string, string>)) {
+          for (const [, fullToken] of Object.entries(mapping.groups)) {
             const groupCol = countColumnName(fullToken);
             setClauses.push(
               `${groupCol} = (SELECT COUNT(*) FROM ${childTable} WHERE json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
@@ -376,7 +376,7 @@ function getCountColumns(config: ContrailConfig, collection: string): { type: st
   const colConfig = config.collections[collection];
   if (!colConfig?.relations) return [];
   const columns: { type: string; column: string }[] = [];
-  const relMap = resolvedRelationsMap[collection] ?? {};
+  const relMap = (config as ResolvedContrailConfig)._resolved?.relations[collection] ?? {};
 
   for (const [relName, rel] of Object.entries(colConfig.relations)) {
     if (rel.count === false) continue;

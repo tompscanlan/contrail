@@ -1,7 +1,6 @@
 import type { Hono } from "hono";
-import type { ContrailConfig, Database, RecordRow, QueryableField, RecordSource } from "../types";
+import type { ContrailConfig, ResolvedContrailConfig, Database, RecordRow, QueryableField, RecordSource } from "../types";
 import { getCollectionNames, countColumnName, recordsTableName } from "../types";
-import { resolvedQueryable, resolvedRelationsMap } from "../queryable.generated";
 import { queryRecords } from "../db";
 import type { SortOption } from "../db/records";
 import { backfillUser } from "../backfill";
@@ -24,7 +23,7 @@ export async function runPipeline(
   const relations = colConfig.relations ?? {};
   const references = colConfig.references ?? {};
   const queryableFields: Record<string, QueryableField> =
-    resolvedQueryable[collection] ?? colConfig.queryable ?? {};
+    (config as ResolvedContrailConfig)._resolved?.queryable[collection] ?? colConfig.queryable ?? {};
 
   const limit = parseIntParam(params.get("limit"), 50);
   const cursor = params.get("cursor") || undefined;
@@ -58,7 +57,7 @@ export async function runPipeline(
   }
 
   const countFilters: Record<string, number> = {};
-  const relMap = resolvedRelationsMap[collection] ?? {};
+  const relMap = (config as ResolvedContrailConfig)._resolved?.relations[collection] ?? {};
   for (const [relName, rel] of Object.entries(relations)) {
     const totalMin = parseIntParam(params.get(`${relName}CountMin`));
     if (totalMin != null) countFilters[rel.collection] = totalMin;
@@ -138,7 +137,7 @@ export async function runPipeline(
 
   const formattedRecords: FormattedRecord[] = rows.map((row) => {
     const formatted = formatRecord(row);
-    flattenCounts(formatted, row.counts, collection, relations);
+    flattenCounts(formatted, row.counts, relations);
     const h = hydrates[row.uri];
     if (h) {
       for (const [relName, groups] of Object.entries(h)) {
@@ -203,8 +202,8 @@ export function registerCollectionRoutes(
       if (!row) return c.json({ error: "Record not found" }, 404);
 
       const formatted = formatRecord({ ...row, collection });
-      const counts = extractCounts(row, collection, relations);
-      if (counts) flattenCounts(formatted, counts, collection, relations);
+      const counts = extractCounts(row, relations);
+      if (counts) flattenCounts(formatted, counts, relations);
 
       const params = new URL(c.req.url).searchParams;
       const wantProfilesSingle = params.get("profiles") === "true";
@@ -277,21 +276,18 @@ export function registerCollectionRoutes(
 
 function extractCounts(
   row: any,
-  collection: string,
   relations: Record<string, any>
 ): Record<string, number> | undefined {
-  const relMap = resolvedRelationsMap[collection] ?? {};
   const counts: Record<string, number> = {};
 
-  for (const [relName, rel] of Object.entries(relations)) {
+  for (const [, rel] of Object.entries(relations)) {
     if (rel.count === false) continue;
     const totalCol = countColumnName(rel.collection);
     const val = row[totalCol];
     if (val != null && val !== 0) counts[rel.collection] = val;
 
-    const mapping = relMap[relName];
-    if (mapping) {
-      for (const [, fullToken] of Object.entries(mapping.groups)) {
+    if (rel.groups) {
+      for (const [, fullToken] of Object.entries(rel.groups as Record<string, string>)) {
         const groupCol = countColumnName(fullToken);
         const gval = row[groupCol];
         if (gval != null && gval !== 0) counts[fullToken] = gval;
@@ -305,24 +301,19 @@ function extractCounts(
 function flattenCounts(
   formatted: FormattedRecord,
   counts: Record<string, number> | undefined,
-  collection: string,
   relations: Record<string, any>
 ): void {
   if (!counts) return;
-  const relMap = resolvedRelationsMap[collection] ?? {};
   const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
   const collectionToRelName: Record<string, string> = {};
   const tokenToField: Record<string, string> = {};
-  for (const [relName, mapping] of Object.entries(relMap)) {
-    collectionToRelName[mapping.collection] = relName;
-    for (const [shortName, fullToken] of Object.entries(mapping.groups)) {
-      tokenToField[fullToken] = `${relName}${capitalize(shortName)}Count`;
-    }
-  }
   for (const [relName, rel] of Object.entries(relations)) {
-    if (!collectionToRelName[rel.collection]) {
-      collectionToRelName[rel.collection] = relName;
+    collectionToRelName[rel.collection] = relName;
+    if (rel.groups) {
+      for (const [shortName, fullToken] of Object.entries(rel.groups as Record<string, string>)) {
+        tokenToField[fullToken] = `${relName}${capitalize(shortName)}Count`;
+      }
     }
   }
 

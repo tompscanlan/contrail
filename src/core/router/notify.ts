@@ -35,6 +35,108 @@ async function fetchRecordFromPDS(
   return { value: data.value, cid: data.cid };
 }
 
+export interface NotifyResult {
+  indexed: number;
+  deleted: number;
+  errors?: string[];
+}
+
+/**
+ * Process notify URIs: fetch from PDS, detect changes, apply events.
+ * Shared by both the Hono route and the Contrail.notify() method.
+ */
+export async function processNotifyUris(
+  db: Database,
+  config: ContrailConfig,
+  uris: string[]
+): Promise<NotifyResult> {
+  const events: IngestEvent[] = [];
+  const errors: string[] = [];
+
+  for (const uri of uris) {
+    const parsed = parseAtUri(uri);
+    if (!parsed) {
+      errors.push(`invalid AT URI: ${uri}`);
+      continue;
+    }
+
+    // Only accept collections we're tracking
+    if (!config.collections[parsed.collection]) {
+      errors.push(`collection not tracked: ${parsed.collection}`);
+      continue;
+    }
+
+    const pds = await getPDS(parsed.did as Did, db);
+    if (!pds) {
+      errors.push(`could not resolve PDS for ${parsed.did}`);
+      continue;
+    }
+
+    const result = await fetchRecordFromPDS(
+      pds,
+      parsed.did,
+      parsed.collection,
+      parsed.rkey
+    );
+
+    const now = Date.now() * 1000; // microseconds
+
+    // Check if this record already exists locally
+    const table = recordsTableName(parsed.collection);
+    const existing = await db
+      .prepare(`SELECT cid FROM ${table} WHERE uri = ?`)
+      .bind(uri)
+      .first<{ cid: string | null }>();
+
+    if (result) {
+      if (existing?.cid === result.cid) {
+        // Same CID — nothing changed
+        continue;
+      }
+
+      events.push({
+        uri,
+        did: parsed.did,
+        collection: parsed.collection,
+        rkey: parsed.rkey,
+        operation: existing ? "update" : "create",
+        cid: result.cid,
+        record: JSON.stringify(result.value),
+        time_us: now,
+        indexed_at: now,
+      });
+    } else if (existing) {
+      // Record gone from PDS but exists locally — delete it.
+      const existingRecord = await db
+        .prepare(`SELECT record FROM ${table} WHERE uri = ?`)
+        .bind(uri)
+        .first<{ record: string | null }>();
+
+      events.push({
+        uri,
+        did: parsed.did,
+        collection: parsed.collection,
+        rkey: parsed.rkey,
+        operation: "delete",
+        cid: null,
+        record: existingRecord?.record ?? null,
+        time_us: now,
+        indexed_at: now,
+      });
+    }
+  }
+
+  if (events.length > 0) {
+    await applyEvents(db, events, config);
+  }
+
+  return {
+    indexed: events.filter((e) => e.operation === "create" || e.operation === "update").length,
+    deleted: events.filter((e) => e.operation === "delete").length,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+}
+
 export function registerNotifyRoute(
   app: Hono,
   db: Database,
@@ -58,93 +160,7 @@ export function registerNotifyRoute(
       return c.json({ error: "max 25 URIs per request" }, 400);
     }
 
-    const events: IngestEvent[] = [];
-    const errors: string[] = [];
-
-    for (const uri of uris) {
-      const parsed = parseAtUri(uri);
-      if (!parsed) {
-        errors.push(`invalid AT URI: ${uri}`);
-        continue;
-      }
-
-      // Only accept collections we're tracking
-      if (!config.collections[parsed.collection]) {
-        errors.push(`collection not tracked: ${parsed.collection}`);
-        continue;
-      }
-
-      const pds = await getPDS(parsed.did as Did, db);
-      if (!pds) {
-        errors.push(`could not resolve PDS for ${parsed.did}`);
-        continue;
-      }
-
-      const result = await fetchRecordFromPDS(
-        pds,
-        parsed.did,
-        parsed.collection,
-        parsed.rkey
-      );
-
-      const now = Date.now() * 1000; // microseconds
-
-      // Check if this record already exists locally
-      const table = recordsTableName(parsed.collection);
-      const existing = await db
-        .prepare(`SELECT cid FROM ${table} WHERE uri = ?`)
-        .bind(uri)
-        .first<{ cid: string | null }>();
-
-      if (result) {
-        if (existing?.cid === result.cid) {
-          // Same CID — nothing changed, skip to avoid double-counting
-          continue;
-        }
-
-        events.push({
-          uri,
-          did: parsed.did,
-          collection: parsed.collection,
-          rkey: parsed.rkey,
-          // Both "update" and "create" trigger a full recount of related records.
-          operation: existing ? "update" : "create",
-          cid: result.cid,
-          record: JSON.stringify(result.value),
-          time_us: now,
-          indexed_at: now,
-        });
-      } else if (existing) {
-        // Record gone from PDS but exists locally — delete it.
-        // We need the old record data so buildCountStatements can decrement counts.
-        const existingRecord = await db
-          .prepare(`SELECT record FROM ${table} WHERE uri = ?`)
-          .bind(uri)
-          .first<{ record: string | null }>();
-
-        events.push({
-          uri,
-          did: parsed.did,
-          collection: parsed.collection,
-          rkey: parsed.rkey,
-          operation: "delete",
-          cid: null,
-          record: existingRecord?.record ?? null,
-          time_us: now,
-          indexed_at: now,
-        });
-      }
-      // If not on PDS and not local, nothing to do
-    }
-
-    if (events.length > 0) {
-      await applyEvents(db, events, config);
-    }
-
-    return c.json({
-      indexed: events.filter((e) => e.operation === "create" || e.operation === "update").length,
-      deleted: events.filter((e) => e.operation === "delete").length,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+    const result = await processNotifyUris(db, config, uris);
+    return c.json(result);
   });
 }

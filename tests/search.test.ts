@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Database, ContrailConfig } from "../src/core/types";
+import type { Database } from "../src/core/types";
+import { resolveConfig } from "../src/core/types";
 import { createTestDb, makeEvent } from "./helpers";
 import { initSchema } from "../src/core/db/schema";
 import { applyEvents, queryRecords } from "../src/core/db/records";
 
-const SEARCH_CONFIG: ContrailConfig = {
+const SEARCH_CONFIG = resolveConfig({
   namespace: "com.example",
   collections: {
     "community.lexicon.calendar.event": {
@@ -31,7 +32,7 @@ const SEARCH_CONFIG: ContrailConfig = {
       searchable: false, // disabled
     },
   },
-};
+});
 
 let db: Database;
 

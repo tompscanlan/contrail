@@ -611,10 +611,6 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     writeFileSync(join(rootDir, "lex.config.js"), lexConfigContent);
     log(`\nGenerated lex.config.js with ${sortedNsids.length} pull NSIDs`);
 
-    // queryable.generated.ts
-    const queryableContent = `// Auto-generated — do not edit. Run \`pnpm generate\` to regenerate.\nimport type { QueryableField } from "./types";\n\nexport const resolvedQueryable: Record<string, Record<string, QueryableField>> = ${JSON.stringify(resolvedQueryableMap, null, 2)};\n\nexport interface ResolvedRelation {\n  collection: string;\n  groupBy: string;\n  groups: Record<string, string>; // shortName → full token value\n}\n\nexport const resolvedRelationsMap: Record<string, Record<string, ResolvedRelation>> = ${JSON.stringify(resolvedRelationsMap, null, 2)};\n`;
-    writeFileSync(join(rootDir, "src", "core", "queryable.generated.ts"), queryableContent);
-    log("Generated src/core/queryable.generated.ts");
   }
 
   log("\nDone!");

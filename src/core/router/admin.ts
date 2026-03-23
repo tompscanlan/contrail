@@ -1,4 +1,4 @@
-import type { Hono, Context, Next } from "hono";
+import type { Hono } from "hono";
 import type { ContrailConfig, Database } from "../types";
 import { getCollectionNames, recordsTableName } from "../types";
 import { getLastCursor } from "../db";
@@ -6,25 +6,11 @@ import { getLastCursor } from "../db";
 export function registerAdminRoutes(
   app: Hono,
   db: Database,
-  config: ContrailConfig,
-  adminSecret?: string
+  config: ContrailConfig
 ): void {
-  const requireAdmin = async (c: Context, next: Next) => {
-    if (adminSecret) {
-      const auth = c.req.header("Authorization");
-      if (auth !== `Bearer ${adminSecret}`)
-        return c.json({ error: "Unauthorized" }, 401);
-    } else {
-      const url = new URL(c.req.url);
-      if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1")
-        return c.json({ error: "ADMIN_SECRET not configured" }, 403);
-    }
-    await next();
-  };
-
   const ns = config.namespace;
 
-  app.get(`/xrpc/${ns}.admin.getCursor`, async (c) => {
+  app.get(`/xrpc/${ns}.getCursor`, async (c) => {
     const cursor = await getLastCursor(db);
     if (cursor === null) return c.json({ cursor: null });
 
@@ -36,7 +22,7 @@ export function registerAdminRoutes(
     });
   });
 
-  app.get(`/xrpc/${ns}.admin.getOverview`, async (c) => {
+  app.get(`/xrpc/${ns}.getOverview`, async (c) => {
     const collections: { collection: string; records: number; unique_users: number }[] = [];
 
     for (const collection of getCollectionNames(config)) {
@@ -53,12 +39,5 @@ export function registerAdminRoutes(
       total_records: collections.reduce((sum, col) => sum + col.records, 0),
       collections,
     });
-  });
-
-  app.get(`/xrpc/${ns}.admin.reset`, requireAdmin, async (c) => {
-    const collectionTables = getCollectionNames(config).map(recordsTableName);
-    const tables = [...collectionTables, "backfills", "discovery", "cursor", "identities"];
-    await db.batch(tables.map((t) => db.prepare(`DELETE FROM ${t}`)));
-    return c.json({ ok: true });
   });
 }

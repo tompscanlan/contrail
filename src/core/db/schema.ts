@@ -1,7 +1,10 @@
-import type { ContrailConfig, Database } from "../types";
-import { getRelationField, countColumnName, recordsTableName } from "../types";
-import { resolvedQueryable, resolvedRelationsMap } from "../queryable.generated";
+import type { ContrailConfig, Database, ResolvedContrailConfig, ResolvedMaps } from "../types";
+import { getRelationField, countColumnName, recordsTableName, resolveConfig } from "../types";
 import { getSearchableFields, ftsTableName } from "../search";
+
+function getResolved(config: ContrailConfig): ResolvedMaps {
+  return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
+}
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS backfills (
@@ -59,10 +62,11 @@ function buildCollectionTables(config: ContrailConfig): string[] {
 }
 
 function buildDynamicIndexes(config: ContrailConfig): string[] {
+  const resolved = getResolved(config);
   const indexes: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
     const table = recordsTableName(collection);
-    const queryable = resolvedQueryable[collection] ?? colConfig.queryable ?? {};
+    const queryable = resolved.queryable[collection] ?? colConfig.queryable ?? {};
     for (const field of Object.keys(queryable)) {
       const idxName = `idx_${sanitizeName(collection)}_${sanitizeName(field)}`;
       indexes.push(
@@ -84,12 +88,13 @@ function buildDynamicIndexes(config: ContrailConfig): string[] {
 }
 
 function buildCountColumns(config: ContrailConfig): string[] {
+  const resolved = getResolved(config);
   const stmts: string[] = [];
   const addedColumns = new Map<string, Set<string>>(); // table → columns
 
   for (const [collection, colConfig] of Object.entries(config.collections)) {
     const table = recordsTableName(collection);
-    const relMap = resolvedRelationsMap[collection] ?? {};
+    const relMap = resolved.relations[collection] ?? {};
 
     if (!addedColumns.has(table)) addedColumns.set(table, new Set());
     const tableColumns = addedColumns.get(table)!;

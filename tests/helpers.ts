@@ -1,12 +1,13 @@
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { Database, ContrailConfig } from "../src/core/types";
+import type { Database, ResolvedContrailConfig } from "../src/core/types";
+import { resolveConfig } from "../src/core/types";
 import { initSchema } from "../src/core/db/schema";
 
 export function createTestDb(): Database {
   return createSqliteDatabase(":memory:");
 }
 
-export const TEST_CONFIG: ContrailConfig = {
+export const TEST_CONFIG: ResolvedContrailConfig = resolveConfig({
   namespace: "com.example",
   collections: {
     "community.lexicon.calendar.event": {
@@ -19,6 +20,11 @@ export const TEST_CONFIG: ContrailConfig = {
         rsvps: {
           collection: "community.lexicon.calendar.rsvp",
           groupBy: "status",
+          groups: {
+            interested: "community.lexicon.calendar.rsvp#interested",
+            going: "community.lexicon.calendar.rsvp#going",
+            notgoing: "community.lexicon.calendar.rsvp#notgoing",
+          },
         },
       },
     },
@@ -31,7 +37,7 @@ export const TEST_CONFIG: ContrailConfig = {
       },
     },
   },
-};
+});
 
 export async function createTestDbWithSchema(): Promise<Database> {
   const db = createTestDb();

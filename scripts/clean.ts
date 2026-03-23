@@ -5,9 +5,10 @@
  */
 
 import { rmSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const ROOT = join(__dirname, "..");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const targets = [
   ".wrangler",
@@ -15,7 +16,6 @@ const targets = [
   "lexicons-pulled",
   "lexicons-generated",
   "src/lexicon-types",
-  "src/core/queryable.generated.ts",
 ];
 
 for (const target of targets) {

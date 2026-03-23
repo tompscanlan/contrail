@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src"],
+  "include": ["src", "examples"],
   "exclude": ["src/adapters/sqlite.ts", "src/generate.ts"]
 }

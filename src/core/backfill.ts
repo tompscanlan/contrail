@@ -412,9 +412,7 @@ async function fetchPage(
       `fetchPage(${relay}, ${collection})`
     );
   } catch (err) {
-    console.error(
-      `Discovery failed for ${collection} from ${relay} after retries: ${err}`
-    );
+    // Discovery page fetch failed after retries — skip this relay
     return null;
   }
 }

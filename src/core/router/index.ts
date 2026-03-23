@@ -11,8 +11,7 @@ import { backfillUser } from "../backfill";
 
 export function createApp(
   db: Database,
-  config: ContrailConfig,
-  adminSecret?: string
+  config: ContrailConfig
 ): Hono {
   const app = new Hono();
   app.use("*", cors());
@@ -43,7 +42,7 @@ export function createApp(
     return c.json(profile);
   });
 
-  registerAdminRoutes(app, db, config, adminSecret);
+  registerAdminRoutes(app, db, config);
   registerCollectionRoutes(app, db, config);
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
