@@ -170,6 +170,7 @@ export async function backfillUser(
 
       await applyEvents(db, events, config, {
         skipReplayDetection: options?.skipReplayDetection,
+        skipFeedFanout: true,
       });
       totalInserted += events.length;
 

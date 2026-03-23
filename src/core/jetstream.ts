@@ -1,13 +1,16 @@
 import { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database } from "./types";
-import { getCollectionNames, getDependentCollections } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents } from "./db";
+import { getCollectionNames, getDependentCollections, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
 
 const BATCH_SIZE = 50;
 
-// Cache known DIDs in memory across ingest cycles (survives within the same Worker isolate)
+// Cache state in memory across ingest cycles (survives within the same Worker isolate)
 let cachedKnownDids: Set<string> | undefined;
+let schemaInitialized = false;
+let lastFeedPruneMs = 0;
+const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 export async function ingestEvents(
   config: ContrailConfig,
@@ -92,7 +95,10 @@ export async function runIngestCycle(
   config: ContrailConfig,
   timeoutMs: number = 25_000
 ): Promise<void> {
-  await initSchema(db, config);
+  if (!schemaInitialized) {
+    await initSchema(db, config);
+    schemaInitialized = true;
+  }
 
   const cursor = await getLastCursor(db);
   const collections = getCollectionNames(config);
@@ -144,18 +150,18 @@ export async function runIngestCycle(
   }
 
   if (lastCursor !== null) {
-    // Use the later of the subscription cursor and the current time, so the
-    // cursor always reaches the present even when no events were received.
-    const nowUs = Date.now() * 1000;
-    const effectiveCursor = Math.max(lastCursor, nowUs);
+    await saveCursor(db, lastCursor);
+    console.log(`Saved cursor: ${lastCursor}`);
+  }
 
-    // Roll back cursor by 60s so the next cycle replays a small window.
-    // This guards against missed events when switching between Jetstream instances
-    // or out-of-order delivery. Duplicate events are handled safely in applyEvents.
-    const safetyMarginUs = 60_000_000;
-    const safeCursor = Math.max(0, effectiveCursor - safetyMarginUs);
-    await saveCursor(db, safeCursor);
-    console.log(`Saved cursor: ${safeCursor} (rolled back 60s from ${effectiveCursor})`);
+  // Prune feed items hourly
+  if (config.feeds && Date.now() - lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
+    const maxItems = Math.max(
+      ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
+    );
+    const pruned = await pruneFeedItems(db, maxItems);
+    if (pruned > 0) console.log(`Pruned ${pruned} old feed items`);
+    lastFeedPruneMs = Date.now();
   }
 
   console.log(`Ingestion complete. Stored ${events.length} events.`);

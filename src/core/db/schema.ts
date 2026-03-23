@@ -112,6 +112,38 @@ function buildCountColumns(config: ContrailConfig): string[] {
   return stmts;
 }
 
+function buildFeedTables(config: ContrailConfig): string[] {
+  if (!config.feeds || Object.keys(config.feeds).length === 0) return [];
+  const stmts = [
+    `CREATE TABLE IF NOT EXISTS feed_items (
+      actor TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      collection TEXT NOT NULL,
+      time_us INTEGER NOT NULL,
+      PRIMARY KEY (actor, uri)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_feed_actor_coll_time ON feed_items(actor, collection, time_us DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_feed_actor_time ON feed_items(actor, time_us DESC)`,
+    `CREATE TABLE IF NOT EXISTS feed_backfills (
+      actor TEXT NOT NULL,
+      feed TEXT NOT NULL,
+      completed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (actor, feed)
+    )`,
+  ];
+
+  // Index follow collections on subject for efficient fan-out lookups
+  const followCollections = new Set(Object.values(config.feeds).map((f) => f.follow));
+  for (const col of followCollections) {
+    const safe = col.replace(/[^a-zA-Z0-9]/g, "_");
+    stmts.push(
+      `CREATE INDEX IF NOT EXISTS idx_${safe}_subject ON records(collection, json_extract(record, '$.subject')) WHERE collection = '${col}'`
+    );
+  }
+
+  return stmts;
+}
+
 function buildFtsTables(config: ContrailConfig): string[] {
   const stmts: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
@@ -150,7 +182,8 @@ export async function initSchema(
 
   const indexStatements = buildDynamicIndexes(config);
   const ftsStatements = buildFtsTables(config);
-  const all = [...baseStatements, ...indexStatements, ...ftsStatements];
+  const feedStatements = buildFeedTables(config);
+  const all = [...baseStatements, ...indexStatements, ...ftsStatements, ...feedStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
   await runMigrations(db);

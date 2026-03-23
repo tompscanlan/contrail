@@ -5,8 +5,9 @@ import type {
   Statement,
   IngestEvent,
   RecordRow,
+  RecordSource,
 } from "../types";
-import { getNestedValue, getRelationField, countColumnName } from "../types";
+import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections } from "../types";
 import { resolvedRelationsMap } from "../queryable.generated";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 
@@ -104,6 +105,111 @@ function buildFtsStatements(
   return stmts;
 }
 
+// --- Feeds ---
+
+function buildFeedStatements(
+  db: Database,
+  event: IngestEvent,
+  config: ContrailConfig,
+  existingRecords: Map<string, string | null>
+): Statement[] {
+  if (!config.feeds) return [];
+
+  const stmts: Statement[] = [];
+
+  for (const [, feedConfig] of Object.entries(config.feeds)) {
+    // Target collection: fan out to followers
+    if (feedConfig.targets.includes(event.collection)) {
+      if (event.operation === "create" || event.operation === "update") {
+        // Insert feed items for all followers of the event creator.
+        // Follow records have: did = follower, record.subject = followed person.
+        stmts.push(
+          db
+            .prepare(
+              `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
+               SELECT r.did, ?, ?, ?
+               FROM records r
+               WHERE r.collection = ?
+                 AND json_extract(r.record, '$.subject') = ?`
+            )
+            .bind(event.uri, event.collection, event.time_us, feedConfig.follow, event.did)
+        );
+      } else if (event.operation === "delete") {
+        stmts.push(
+          db.prepare("DELETE FROM feed_items WHERE uri = ?").bind(event.uri)
+        );
+      }
+    }
+
+    // Follow collection: handle follow/unfollow
+    if (event.collection === feedConfig.follow) {
+      if (event.operation === "create") {
+        const record = event.record ? JSON.parse(event.record) : null;
+        const subject = record?.subject;
+        if (subject) {
+          // New follow: backfill recent items from the followed user
+          for (const targetCol of feedConfig.targets) {
+            stmts.push(
+              db
+                .prepare(
+                  `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
+                   SELECT ?, r.uri, r.collection, r.time_us
+                   FROM records r
+                   WHERE r.collection = ? AND r.did = ?
+                   ORDER BY r.time_us DESC
+                   LIMIT 100`
+                )
+                .bind(event.did, targetCol, subject)
+            );
+          }
+        }
+      } else if (event.operation === "delete") {
+        // Unfollow: remove feed items from the unfollowed user.
+        // The record field is null for deletes, so we look up the existing record.
+        const existingRecord = existingRecords.get(event.uri);
+        if (existingRecord) {
+          const parsed = JSON.parse(existingRecord);
+          const subject = parsed?.subject;
+          if (subject) {
+            const targetPlaceholders = feedConfig.targets.map(() => "?").join(",");
+            stmts.push(
+              db
+                .prepare(
+                  `DELETE FROM feed_items WHERE actor = ? AND uri IN (
+                     SELECT uri FROM records WHERE did = ? AND collection IN (${targetPlaceholders})
+                   )`
+                )
+                .bind(event.did, subject, ...feedConfig.targets)
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return stmts;
+}
+
+// --- Feed pruning ---
+
+export async function pruneFeedItems(
+  db: Database,
+  maxItems: number
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `DELETE FROM feed_items WHERE rowid NOT IN (
+         SELECT rowid FROM (
+           SELECT rowid, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
+           FROM feed_items
+         ) WHERE rn <= ?
+       )`
+    )
+    .bind(maxItems)
+    .run();
+  return (result as any)?.changes ?? 0;
+}
+
 // --- Cursor ---
 
 export async function getLastCursor(db: Database): Promise<number | null> {
@@ -131,25 +237,34 @@ export async function applyEvents(
   db: Database,
   events: IngestEvent[],
   config?: ContrailConfig,
-  options?: { skipReplayDetection?: boolean }
+  options?: { skipReplayDetection?: boolean; skipFeedFanout?: boolean }
 ): Promise<void> {
   if (events.length === 0) return;
 
   // Look up existing records so we can skip duplicate count updates on replayed events.
   // A create/update with the same CID is a replay; a delete for a missing URI is a replay.
   // Can be skipped during backfill where records are known to be fresh inserts.
+  // Also fetches record content for follow-delete events (needed for unfollow feed cleanup).
   const existingCids = new Map<string, string | null>();
+  const existingRecords = new Map<string, string | null>();
+  const followCollections = config ? getFeedFollowCollections(config) : [];
+  const needRecordContent = followCollections.length > 0;
+
   if (config && !options?.skipReplayDetection) {
     const uris = events.map((e) => e.uri);
+    const selectCols = needRecordContent ? "uri, cid, record" : "uri, cid";
     for (let i = 0; i < uris.length; i += 50) {
       const chunk = uris.slice(i, i + 50);
       const placeholders = chunk.map(() => "?").join(",");
       const rows = await db
-        .prepare(`SELECT uri, cid FROM records WHERE uri IN (${placeholders})`)
+        .prepare(`SELECT ${selectCols} FROM records WHERE uri IN (${placeholders})`)
         .bind(...chunk)
-        .all<{ uri: string; cid: string | null }>();
+        .all<{ uri: string; cid: string | null; record?: string | null }>();
       for (const row of rows.results ?? []) {
         existingCids.set(row.uri, row.cid);
+        if (needRecordContent && row.record) {
+          existingRecords.set(row.uri, row.record);
+        }
       }
     }
   }
@@ -191,6 +306,9 @@ export async function applyEvents(
 
       if (!isReplay) {
         batch.push(...buildCountStatements(db, e, config));
+        if (!options?.skipFeedFanout) {
+          batch.push(...buildFeedStatements(db, e, config, existingRecords));
+        }
       }
       batch.push(...buildFtsStatements(db, e, config));
     }
@@ -237,6 +355,7 @@ export interface QueryOptions {
   countFilters?: Record<string, number>;
   sort?: SortOption;
   search?: string;
+  source?: RecordSource;
 }
 
 export async function queryRecords(
@@ -254,11 +373,15 @@ export async function queryRecords(
     countFilters = {},
     sort,
     search,
+    source,
   } = options;
 
   const limit = Math.min(Math.max(1, rawLimit ?? 50), 200);
   const conditions: string[] = ["r.collection = ?"];
   const bindings: (string | number)[] = [collection];
+
+  if (source?.conditions) conditions.push(...source.conditions);
+  if (source?.params) bindings.push(...source.params);
 
   const countCols = getCountColumns(config, collection);
 
@@ -339,7 +462,7 @@ export async function queryRecords(
     : "";
   const select = `r.uri, r.did, r.collection, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}`;
 
-  const join = ftsJoin;
+  const join = [source?.joins, ftsJoin].filter(Boolean).join(" ");
 
   let orderBy: string;
   if (sort?.recordField) {

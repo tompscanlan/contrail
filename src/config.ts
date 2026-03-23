@@ -20,4 +20,13 @@ export const config: ContrailConfig = {
       },
     },
   },
+  // feeds: {
+  //   following: {
+  //     follow: "app.bsky.graph.follow",
+  //     targets: [
+  //       "community.lexicon.calendar.event",
+  //       "community.lexicon.calendar.rsvp",
+  //     ],
+  //   },
+  // },
 };

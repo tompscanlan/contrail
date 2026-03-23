@@ -1,6 +1,5 @@
 import type { CollectionConfig } from "./types";
 import { getNestedValue } from "./types";
-import { resolvedQueryable } from "./queryable.generated";
 
 /**
  * Resolve which fields are searchable for a collection.
@@ -10,16 +9,8 @@ export function getSearchableFields(
   collection: string,
   colConfig: CollectionConfig
 ): string[] | null {
-  if (colConfig.searchable === false) return null;
-  if (Array.isArray(colConfig.searchable)) {
-    return colConfig.searchable.length > 0 ? colConfig.searchable : null;
-  }
-  // Auto-detect: all non-range queryable fields
-  const queryable = resolvedQueryable[collection] ?? colConfig.queryable ?? {};
-  const fields = Object.entries(queryable)
-    .filter(([, f]) => f.type !== "range")
-    .map(([name]) => name);
-  return fields.length > 0 ? fields : null;
+  if (!Array.isArray(colConfig.searchable)) return null;
+  return colConfig.searchable.length > 0 ? colConfig.searchable : null;
 }
 
 /** Sanitized FTS table name for a collection. */

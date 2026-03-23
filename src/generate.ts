@@ -307,6 +307,168 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     defs: { main: { type: "procedure", description: "Notify of a record change for immediate indexing. Fetches the record from the user's PDS and indexes (or deletes) it.", input: { encoding: "application/json", schema: { type: "object", properties: { uri: { type: "string", format: "at-uri", description: "Single AT URI to fetch and index" }, uris: { type: "array", items: { type: "string", format: "at-uri" }, maxLength: 25, description: "Batch of AT URIs to fetch and index (max 25)" } } } }, output: { encoding: "application/json", schema: { type: "object", required: ["indexed", "deleted"], properties: { indexed: { type: "integer", description: "Number of records created or updated" }, deleted: { type: "integer", description: "Number of records deleted (not found on PDS)" }, errors: { type: "array", items: { type: "string" }, description: "Errors for individual URIs that could not be processed" } } } } } },
   });
 
+  // --- Feeds ---
+
+  if (config.feeds && Object.keys(config.feeds).length > 0) {
+    log("Generating feed endpoint...");
+
+    const feedNames = Object.keys(config.feeds);
+    const allTargets = [...new Set(Object.values(config.feeds).flatMap((f) => f.targets))];
+
+    // Merge queryable fields, relations, and references from all target collections
+    const feedParams: Record<string, any> = {
+      feed: { type: "string", knownValues: feedNames, description: "Feed name" },
+      actor: { type: "string", format: "at-identifier", description: "DID or handle of the requesting user" },
+      collection: { type: "string", knownValues: allTargets, description: "Filter by target collection (defaults to first target)" },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+      cursor: { type: "string" },
+      profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
+    };
+
+    const feedSortableValues: string[] = [];
+    const feedHydrateDefs: Record<string, any> = {};
+    const feedRefDefs: Record<string, any> = {};
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+    for (const targetCol of allTargets) {
+      const targetConfig = config.collections[targetCol];
+      if (!targetConfig) continue;
+
+      const autoDetected = detectQueryableFields(targetCol);
+      const manual = targetConfig.queryable ?? {};
+      const merged = { ...autoDetected, ...manual };
+
+      // Search
+      if (Array.isArray(targetConfig.searchable) && targetConfig.searchable.length > 0 && !feedParams["search"]) {
+        feedParams["search"] = { type: "string", description: "Full-text search" };
+      }
+
+      // Queryable fields
+      for (const [field, fieldConfig] of Object.entries(merged)) {
+        const param = fieldToParam(field);
+        if (fieldConfig.type === "range") {
+          if (!feedParams[`${param}Min`]) {
+            feedParams[`${param}Min`] = { type: "string", description: `Minimum value for ${field}` };
+            feedParams[`${param}Max`] = { type: "string", description: `Maximum value for ${field}` };
+          }
+        } else {
+          if (!feedParams[param]) {
+            feedParams[param] = { type: "string", description: `Filter by ${field}` };
+          }
+        }
+        feedSortableValues.push(fieldToParam(field));
+      }
+
+      // Relations (counts + hydration)
+      for (const [relName, rel] of Object.entries(targetConfig.relations ?? {})) {
+        if (!feedParams[`${relName}CountMin`]) {
+          feedParams[`${relName}CountMin`] = { type: "integer", description: `Minimum total ${relName} count` };
+          feedSortableValues.push(`${relName}Count`);
+        }
+        if (!feedParams[`hydrate${cap(relName)}`]) {
+          feedParams[`hydrate${cap(relName)}`] = { type: "integer", minimum: 1, maximum: 50, description: `Number of ${relName} records to embed per record` };
+        }
+
+        if (rel.groupBy) {
+          const knownValues = getKnownValues(rel.collection, rel.groupBy);
+          for (const token of knownValues) {
+            const shortName = tokenShortName(token);
+            const paramName = `${relName}${cap(shortName)}CountMin`;
+            if (!feedParams[paramName]) {
+              feedParams[paramName] = { type: "integer", description: `Minimum ${relName} count where ${rel.groupBy} = ${shortName}` };
+              feedSortableValues.push(`${relName}${cap(shortName)}Count`);
+            }
+          }
+        }
+      }
+
+      // References (hydration params)
+      for (const [refName] of Object.entries(targetConfig.references ?? {})) {
+        if (!feedParams[`hydrate${cap(refName)}`]) {
+          feedParams[`hydrate${cap(refName)}`] = { type: "boolean", description: `Embed the referenced ${refName} record` };
+        }
+      }
+    }
+
+    // Sort/order params
+    const uniqueSortable = [...new Set(feedSortableValues)];
+    if (uniqueSortable.length > 0) {
+      feedParams["sort"] = { type: "string", knownValues: uniqueSortable, description: "Field to sort by (default: time_us)" };
+      feedParams["order"] = { type: "string", knownValues: ["asc", "desc"], description: "Sort direction" };
+    }
+
+    // Build a record def per target collection for the union
+    const feedRecordDefs: Record<string, any> = {};
+    const feedRecordRefs: string[] = [];
+
+    for (const targetCol of allTargets) {
+      const targetConfig = config.collections[targetCol];
+      if (!targetConfig) continue;
+
+      const collectionRef = getCollectionLexiconRef(targetCol);
+
+      const countFields: CountField[] = [];
+      const relationDefs: RelationDef[] = [];
+      const referenceDefs: ReferenceDef[] = [];
+
+      for (const [relName, rel] of Object.entries(targetConfig.relations ?? {})) {
+        countFields.push({ name: `${relName}Count`, description: `Total ${relName} count` });
+        const groupMapping: Record<string, string> = {};
+        if (rel.groupBy) {
+          for (const token of getKnownValues(rel.collection, rel.groupBy)) {
+            const shortName = tokenShortName(token);
+            groupMapping[shortName] = token;
+            countFields.push({ name: `${relName}${cap(shortName)}Count`, description: `${relName} count where ${rel.groupBy} = ${shortName}` });
+          }
+        }
+        relationDefs.push({ relName, collection: rel.collection, groupBy: rel.groupBy, groups: groupMapping });
+      }
+
+      for (const [refName, ref] of Object.entries(targetConfig.references ?? {})) {
+        referenceDefs.push({ refName, collection: ref.collection });
+      }
+
+      const defName = `feedRecord_${targetCol.replace(/[^a-zA-Z0-9]/g, "_")}`;
+      feedRecordDefs[defName] = buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs);
+      feedRecordRefs.push(`#${defName}`);
+
+      // Add hydrate + reference defs (includes grouped wrappers)
+      Object.assign(feedHydrateDefs, buildHydrateDefs(relationDefs));
+      Object.assign(feedRefDefs, buildReferenceDefs(referenceDefs));
+    }
+
+    const recordsItems = feedRecordRefs.length === 1
+      ? { type: "ref", ref: feedRecordRefs[0] }
+      : { type: "union", refs: feedRecordRefs };
+
+    writeLexicon(`${ns}.getFeed`, {
+      lexicon: 1, id: `${ns}.getFeed`,
+      defs: {
+        main: {
+          type: "query",
+          description: "Get a personalized feed based on followed users' activity",
+          parameters: { type: "params", required: ["feed", "actor"], properties: feedParams },
+          output: {
+            encoding: "application/json",
+            schema: {
+              type: "object",
+              required: ["records"],
+              properties: {
+                records: { type: "array", items: recordsItems },
+                cursor: { type: "string" },
+                profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } },
+              },
+            },
+          },
+        },
+        ...feedRecordDefs,
+        ...feedHydrateDefs,
+        ...feedRefDefs,
+        ...profileDefs(),
+      },
+    });
+  }
+
   // --- Per-collection ---
 
   log("Generating collection endpoints...");
@@ -331,17 +493,11 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     };
 
     // Search param
-    if (colConfig.searchable !== false) {
-      const allQueryable = { ...autoDetected, ...manual };
-      const searchableFields = Array.isArray(colConfig.searchable)
-        ? colConfig.searchable
-        : Object.entries(allQueryable).filter(([, f]) => f.type !== "range").map(([name]) => name);
-      if (searchableFields.length > 0) {
-        listParams["search"] = {
-          type: "string",
-          description: `Full-text search across: ${searchableFields.join(", ")}`,
-        };
-      }
+    if (Array.isArray(colConfig.searchable) && colConfig.searchable.length > 0) {
+      listParams["search"] = {
+        type: "string",
+        description: `Full-text search across: ${colConfig.searchable.join(", ")}`,
+      };
     }
 
     for (const [field, fieldConfig] of Object.entries(merged)) {

@@ -23,8 +23,15 @@ export const config: ContrailConfig = {
         },
       },
     },
-    "community.lexicon.calendar.rsvp": {},
-  }
+    "community.lexicon.calendar.rsvp": {
+      references: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          field: "subject.uri",
+        },
+      },
+    },
+  },
 };
 ```
 
@@ -70,8 +77,12 @@ You can override any auto-detected field by specifying `queryable` manually in c
 | `relations.*.field` | `"subject.uri"` | Field in the related record to match against |
 | `relations.*.match` | `"uri"` | Match against parent's `"uri"` or `"did"` |
 | `relations.*.groupBy` | — | Split counts by this field's value |
-| `queries` | `{}` | Custom query handlers |
-| `searchable` | auto-detected | FTS5 search fields. `string[]` = explicit fields, `false` = disabled, omitted = all non-range queryable fields |
+| `references` | `{}` | Forward references to other collections for hydration |
+| `references.*.collection` | — | Target collection NSID |
+| `references.*.field` | — | Field containing the target record's AT URI |
+| `queries` | `{}` | Custom query handlers (raw Response) |
+| `pipelineQueries` | `{}` | Custom query handlers that go through the standard filter/sort/hydration pipeline |
+| `searchable` | disabled | FTS5 search fields. Provide `string[]` to enable, omit to disable |
 
 ### Profiles
 
@@ -100,7 +111,7 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 |-------|---------|-------------|
 | `actor` | `?actor=did:plc:...` or `?actor=alice.bsky.social` | Filter by DID or handle (triggers on-demand backfill) |
 | `profiles` | `?profiles=true` | Include profile + identity info keyed by DID |
-| `search` | `?search=meetup` | Full-text search across searchable fields (FTS5, ranked) |
+| `search` | `?search=meetup` | Full-text search across searchable fields (FTS5, ranked). Requires `searchable` to be configured. |
 | `{field}` | `?status=going` | Equality filter on queryable string field |
 | `{field}Min` | `?startsAtMin=2026-03-16` | Range minimum (datetime/integer fields) |
 | `{field}Max` | `?endsAtMax=2026-04-01` | Range maximum (datetime/integer fields) |
@@ -110,7 +121,7 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 | `hydrate{Ref}` | `?hydrateEvent=true` | Embed the referenced record |
 | `sort` | `?sort=startsAt` | Sort by a queryable field or count (see below) |
 | `order` | `?order=asc` | Sort direction: `asc` or `desc` (default depends on field type) |
-| `limit` | `?limit=25` | Page size (1-100, default 50) |
+| `limit` | `?limit=25` | Page size (1-200, default 50) |
 | `cursor` | `?cursor=...` | Pagination cursor |
 
 **Sorting** — `sort` accepts any queryable field param name or a count field:
@@ -122,7 +133,7 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 ?sort=rsvpsGoingCount&order=asc  # by going count ascending
 ```
 
-**Search** uses SQLite FTS5 for ranked full-text search. By default, all non-range queryable fields are searchable. Results are ranked by relevance (BM25) with `time_us` as tiebreaker. Supports FTS5 syntax including prefix (`meetup*`), phrases (`"rust meetup"`), and boolean (`rust OR typescript`). Combinable with all other filters.
+**Search** uses SQLite FTS5 for ranked full-text search. To enable, set `searchable: ["field1", "field2"]` on a collection. Results are ranked by relevance (BM25) with `time_us` as tiebreaker. Supports FTS5 syntax including prefix (`meetup*`), phrases (`"rust meetup"`), and boolean (`rust OR typescript`). Combinable with all other filters.
 
 ```
 ?search=meetup                          # basic search
@@ -150,7 +161,7 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 # Single event with counts, RSVPs, and profiles
 /xrpc/community.lexicon.calendar.event.getRecord?uri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateRsvps=10&profiles=true
 
-# Search for events by name/description
+# Search for events by name/description (requires searchable config)
 /xrpc/community.lexicon.calendar.event.listRecords?search=meetup&profiles=true
 
 # RSVPs for a specific event, with the referenced event embedded

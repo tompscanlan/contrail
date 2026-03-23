@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { Database, ContrailConfig } from "../types";
 import { registerAdminRoutes } from "./admin";
 import { registerCollectionRoutes } from "./collection";
+import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
@@ -44,6 +45,7 @@ export function createApp(
 
   registerAdminRoutes(app, db, config, adminSecret);
   registerCollectionRoutes(app, db, config);
+  registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
 
   return app;

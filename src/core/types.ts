@@ -37,6 +37,27 @@ export type CustomQueryHandler = (
   config: ContrailConfig
 ) => Promise<Response>;
 
+export interface RecordSource {
+  joins?: string;
+  conditions?: string[];
+  params?: (string | number)[];
+}
+
+export type PipelineQueryHandler = (
+  db: Database,
+  params: URLSearchParams,
+  config: ContrailConfig
+) => Promise<RecordSource>;
+
+export interface FeedConfig {
+  follow: string;
+  targets: string[];
+  /** Max feed items per user (default: 200). Oldest items are pruned after backfill. */
+  maxItems?: number;
+}
+
+export const DEFAULT_FEED_MAX_ITEMS = 200;
+
 export interface CollectionConfig {
   discover?: boolean;
   queryable?: Record<string, QueryableField>;
@@ -44,7 +65,8 @@ export interface CollectionConfig {
   /** Forward references: fields on this collection's records that point at another collection. */
   references?: Record<string, ReferenceConfig>;
   queries?: Record<string, CustomQueryHandler>;
-  /** FTS5 search fields. string[] = explicit fields, false = disabled, omitted = auto-detect non-range queryable fields */
+  pipelineQueries?: Record<string, PipelineQueryHandler>;
+  /** FTS5 search fields. Provide an array of field names to enable full-text search. Omit or set to false to disable. */
   searchable?: string[] | false;
 }
 
@@ -67,6 +89,7 @@ export interface ContrailConfig {
   profiles?: string[];
   relays?: string[];
   jetstreams?: string[];
+  feeds?: Record<string, FeedConfig>;
 }
 
 /**
@@ -81,6 +104,15 @@ export function resolveConfig(config: ContrailConfig): ContrailConfig {
     }
   }
 
+  // Auto-add follow collections from feed configs as dependent collections
+  if (config.feeds) {
+    for (const feed of Object.values(config.feeds)) {
+      if (!collections[feed.follow]) {
+        collections[feed.follow] = { discover: false };
+      }
+    }
+  }
+
   return {
     ...config,
     collections,
@@ -88,6 +120,11 @@ export function resolveConfig(config: ContrailConfig): ContrailConfig {
     jetstreams: config.jetstreams ?? DEFAULT_JETSTREAMS,
     relays: config.relays ?? DEFAULT_RELAYS,
   };
+}
+
+export function getFeedFollowCollections(config: ContrailConfig): string[] {
+  if (!config.feeds) return [];
+  return [...new Set(Object.values(config.feeds).map((f) => f.follow))];
 }
 
 // Record types
