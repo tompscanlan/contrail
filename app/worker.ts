@@ -1,5 +1,5 @@
-import { Contrail } from "contrail";
-import { createHandler } from "contrail/server";
+import { Contrail } from "../src/index";
+import { createHandler } from "../src/server";
 import { config } from "./config";
 
 const contrail = new Contrail(config);

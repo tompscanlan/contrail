@@ -2,10 +2,10 @@
  * Discover users from relays and backfill their records from PDS.
  *
  * Usage:
- *   npx tsx sync.ts           # local D1
- *   npx tsx sync.ts --remote  # prod D1
+ *   pnpm sync           # local D1
+ *   pnpm sync --remote  # prod D1
  */
-import { Contrail } from "contrail";
+import { Contrail } from "../src/index";
 import { config } from "./config";
 import { getPlatformProxy } from "wrangler";
 

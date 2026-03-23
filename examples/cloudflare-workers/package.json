@@ -1,0 +1,21 @@
+{
+  "name": "contrail-cloudflare-workers-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "sync": "tsx sync.ts",
+    "sync:remote": "tsx sync.ts --remote"
+  },
+  "dependencies": {
+    "contrail": "github:flo-bit/contrail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250124.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.63.0"
+  }
+}

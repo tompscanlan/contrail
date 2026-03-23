@@ -8,10 +8,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src", "app"],
-  "exclude": ["src/adapters/sqlite.ts", "src/generate.ts"]
+  "include": ["."]
 }

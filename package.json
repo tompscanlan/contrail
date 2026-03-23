@@ -3,6 +3,7 @@
   "version": "0.0.2",
   "private": true,
   "type": "module",
+  "files": ["src"],
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
@@ -13,11 +14,11 @@
     "dev:auto": "tsx scripts/dev.ts",
     "deploy": "wrangler deploy",
     "clean": "tsx scripts/clean.ts",
-    "generate": "tsx examples/cloudflare-workers/generate.ts",
-    "generate:pull": "tsx examples/cloudflare-workers/generate.ts && lex-cli pull && tsx examples/cloudflare-workers/generate.ts && lex-cli pull",
+    "generate": "tsx app/generate.ts",
+    "generate:pull": "tsx app/generate.ts && lex-cli pull && tsx app/generate.ts && lex-cli pull",
     "typecheck": "tsc --noEmit",
     "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",
-    "sync": "tsx examples/cloudflare-workers/sync.ts",
+    "sync": "tsx app/sync.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
