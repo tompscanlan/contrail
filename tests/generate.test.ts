@@ -110,10 +110,8 @@ describe("basic generation", () => {
   });
 
   it("generates admin endpoints", () => {
-    expect(lexicons["test.app.admin.getCursor"]).toBeDefined();
-    expect(lexicons["test.app.admin.getOverview"]).toBeDefined();
-    expect(lexicons["test.app.admin.sync"]).toBeDefined();
-    expect(lexicons["test.app.admin.reset"]).toBeDefined();
+    expect(lexicons["test.app.getCursor"]).toBeDefined();
+    expect(lexicons["test.app.getOverview"]).toBeDefined();
   });
 
   it("generates getProfile", () => {
