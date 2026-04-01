@@ -20,6 +20,10 @@
       "types": "./dist/adapters/sqlite.d.ts",
       "import": "./dist/adapters/sqlite.js"
     },
+    "./postgres": {
+      "types": "./dist/adapters/postgres.d.ts",
+      "import": "./dist/adapters/postgres.js"
+    },
     "./generate": {
       "types": "./dist/generate.d.ts",
       "import": "./dist/generate.js"
@@ -63,14 +67,24 @@
   "devDependencies": {
     "@atcute/lex-cli": "^2.5.3",
     "@atcute/lexicon-doc": "^2.1.2",
+    "@changesets/cli": "^2.29.4",
     "@cloudflare/workers-types": "^4.20250124.0",
     "@types/node": "^25.5.0",
-    "@changesets/cli": "^2.29.4",
+    "@types/pg": "^8.20.0",
+    "pg": "^8.20.0",
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.0",
     "wrangler": "^4.63.0"
+  },
+  "peerDependencies": {
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   },
   "license": "MIT"
 }

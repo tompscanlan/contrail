@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import type { Database, Statement } from "../core/types";
+import { sqliteDialect } from "../core/dialect";
 
 export function createSqliteDatabase(path: string): Database {
   const raw = new DatabaseSync(path);
@@ -33,5 +34,6 @@ export function createSqliteDatabase(path: string): Database {
       }
       return results;
     },
+    dialect: sqliteDialect,
   };
 }
