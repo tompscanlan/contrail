@@ -1,14 +1,11 @@
-# SvelteKit + Contrail + AT Protocol OAuth
+# sveltekit + contrail + atproto OAuth
 
-A SvelteKit app on Cloudflare Workers with self-hosted AT Protocol record indexing via [contrail](https://github.com/flo-bit/contrail), fully typed queries, and OAuth authentication.
-
-![screenshot](./screenshot.png)
+A sveltekit example app on cloudflare workers with self-hosted atproto record indexing via [contrail](https://github.com/flo-bit/contrail), fully typed queries, and OAuth authentication.
 
 ## Setup
 
 ```sh
 pnpm install
-pnpm generate:pull   # generate lexicons + types
 pnpm dev
 ```
 
@@ -35,6 +32,8 @@ export const config: ContrailConfig = {
 ```
 
 After changing the config, run `pnpm generate:pull` to regenerate lexicons and types.
+
+Run `pnpm sync` to backfill existing records from the network.
 
 Wrangler bindings (`wrangler.jsonc`):
 
@@ -70,7 +69,7 @@ Types are generated from contrail's config via `pnpm generate:pull`, which produ
 
 **Scheduled ingestion** works around SvelteKit's lack of `scheduled` export support ([sveltejs/kit#4841](https://github.com/sveltejs/kit/issues/4841)) by appending a handler post-build that self-calls `/api/cron`.
 
-**OAuth** uses `@atcute/oauth-node-client` with KV-backed sessions and HMAC-signed cookies. See [SETUP.md](SETUP.md) for details.
+**OAuth** uses `@atcute/oauth-node-client` with KV-backed sessions and HMAC-signed cookies.
 
 ## License
 
