@@ -209,9 +209,18 @@ export async function initSchema(
   const indexStatements = buildDynamicIndexes(config, dialect);
   const ftsStatements = buildFtsTables(config, dialect);
   const feedStatements = buildFeedTables(config, dialect);
-  const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...ftsStatements, ...feedStatements];
+  const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...feedStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
+
+  // FTS5 may not be available (e.g. node:sqlite) — skip gracefully
+  for (const stmt of ftsStatements) {
+    try {
+      await db.prepare(stmt).run();
+    } catch {
+      // FTS5 not supported in this environment
+    }
+  }
   await runMigrations(db);
 
   // Add count columns (ALTER TABLE — may already exist)

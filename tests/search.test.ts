@@ -5,6 +5,14 @@ import { createTestDb, makeEvent } from "./helpers";
 import { initSchema } from "../src/core/db/schema";
 import { applyEvents, queryRecords } from "../src/core/db/records";
 
+// Detect FTS5 support at module level (node:sqlite doesn't include it)
+let hasFts = false;
+try {
+  const testDb = createTestDb();
+  await testDb.prepare("CREATE VIRTUAL TABLE __fts_test USING fts5(content)").run();
+  hasFts = true;
+} catch {}
+
 const SEARCH_CONFIG = resolveConfig({
   namespace: "com.example",
   collections: {
@@ -23,13 +31,13 @@ const SEARCH_CONFIG = resolveConfig({
         body: {},
         category: {},
       },
-      searchable: ["title", "body"], // explicit: only title and body
+      searchable: ["title", "body"],
     },
     "test.disabled.collection": {
       queryable: {
         name: {},
       },
-      searchable: false, // disabled
+      searchable: false,
     },
   },
 });
@@ -37,11 +45,12 @@ const SEARCH_CONFIG = resolveConfig({
 let db: Database;
 
 beforeEach(async () => {
+  if (!hasFts) return;
   db = createTestDb();
   await initSchema(db, SEARCH_CONFIG);
 });
 
-describe("FTS with explicit searchable fields", () => {
+describe.skipIf(!hasFts)("FTS with explicit searchable fields", () => {
   const collection = "community.lexicon.calendar.event";
 
   beforeEach(async () => {
@@ -78,10 +87,7 @@ describe("FTS with explicit searchable fields", () => {
   });
 
   it("finds records matching a search term", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Rust",
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Rust" });
     expect(result.records).toHaveLength(2);
     const names = result.records.map((r) => JSON.parse(r.record!).name);
     expect(names).toContain("Rust Meetup");
@@ -89,42 +95,28 @@ describe("FTS with explicit searchable fields", () => {
   });
 
   it("searches across multiple fields", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Rustaceans",
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Rustaceans" });
     expect(result.records).toHaveLength(1);
     expect(JSON.parse(result.records[0].record!).name).toBe("Rust Meetup");
   });
 
   it("returns nothing for non-matching search", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Python",
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Python" });
     expect(result.records).toHaveLength(0);
   });
 
   it("supports prefix search", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Type*",
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Type*" });
     expect(result.records).toHaveLength(2);
   });
 
   it("combines search with filters", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Rust",
-      filters: { mode: "in-person" },
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Rust", filters: { mode: "in-person" } });
     expect(result.records).toHaveLength(1);
     expect(JSON.parse(result.records[0].record!).name).toBe("Rust Meetup");
   });
 
   it("does not search range fields (startsAt)", async () => {
-    // startsAt is range, so not included in FTS. Searching for its value should not match.
     await applyEvents(
       db,
       [
@@ -139,152 +131,68 @@ describe("FTS with explicit searchable fields", () => {
       ],
       SEARCH_CONFIG
     );
-    // "T10" would appear in the startsAt value but not in any searchable field
-    const result = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "T10",
-    });
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "T10" });
     expect(result.records).toHaveLength(0);
   });
 });
 
-describe("FTS sync", () => {
+describe.skipIf(!hasFts)("FTS sync", () => {
   const collection = "community.lexicon.calendar.event";
 
   it("updates FTS on record update", async () => {
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/community.lexicon.calendar.event/1",
-          collection,
-          rkey: "1",
-          record: { name: "Old Name", mode: "online", description: "test" },
-          time_us: 1000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
-
-    // Update the record
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/community.lexicon.calendar.event/1",
-          collection,
-          rkey: "1",
-          record: { name: "New Name", mode: "online", description: "test" },
-          operation: "update",
-          time_us: 2000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
-
-    const oldResult = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Old" });
-    expect(oldResult.records).toHaveLength(0);
-
-    const newResult = await queryRecords(db, SEARCH_CONFIG, { collection, search: "New" });
-    expect(newResult.records).toHaveLength(1);
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Old Name", mode: "online", description: "test" }, time_us: 1000 }),
+    ], SEARCH_CONFIG);
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "New Name", mode: "online", description: "test" }, operation: "update", time_us: 2000 }),
+    ], SEARCH_CONFIG);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Old" })).records).toHaveLength(0);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "New" })).records).toHaveLength(1);
   });
 
   it("removes from FTS on delete", async () => {
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/community.lexicon.calendar.event/1",
-          collection,
-          rkey: "1",
-          record: { name: "Deletable", mode: "online", description: "test" },
-          time_us: 1000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
-
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/community.lexicon.calendar.event/1",
-          collection,
-          rkey: "1",
-          operation: "delete",
-          record: { name: "Deletable", mode: "online", description: "test" },
-          time_us: 2000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
-
-    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Deletable" });
-    expect(result.records).toHaveLength(0);
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Deletable", mode: "online", description: "test" }, time_us: 1000 }),
+    ], SEARCH_CONFIG);
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", operation: "delete", record: { name: "Deletable", mode: "online", description: "test" }, time_us: 2000 }),
+    ], SEARCH_CONFIG);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Deletable" })).records).toHaveLength(0);
   });
 });
 
-describe("explicit searchable fields", () => {
+describe.skipIf(!hasFts)("explicit searchable fields", () => {
   const collection = "test.explicit.collection";
 
   beforeEach(async () => {
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/test.explicit.collection/1",
-          did: "did:plc:a",
-          collection,
-          rkey: "1",
-          record: { title: "Interesting Article", body: "Some content here", category: "tech" },
-          time_us: 1000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/test.explicit.collection/1", did: "did:plc:a", collection, rkey: "1", record: { title: "Interesting Article", body: "Some content here", category: "tech" }, time_us: 1000 }),
+    ], SEARCH_CONFIG);
   });
 
   it("searches in explicitly listed fields", async () => {
-    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Interesting" });
-    expect(result.records).toHaveLength(1);
-
-    const result2 = await queryRecords(db, SEARCH_CONFIG, { collection, search: "content" });
-    expect(result2.records).toHaveLength(1);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Interesting" })).records).toHaveLength(1);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "content" })).records).toHaveLength(1);
   });
 
   it("does not search non-listed fields", async () => {
-    // "tech" is in category, which is not in searchable
-    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "tech" });
-    expect(result.records).toHaveLength(0);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "tech" })).records).toHaveLength(0);
   });
 });
 
-describe("searchable: false", () => {
+describe.skipIf(!hasFts)("searchable: false", () => {
   const collection = "test.disabled.collection";
 
   it("search param is ignored when FTS is disabled", async () => {
-    await applyEvents(
-      db,
-      [
-        makeEvent({
-          uri: "at://did:plc:a/test.disabled.collection/1",
-          did: "did:plc:a",
-          collection,
-          rkey: "1",
-          record: { name: "Should Not Be Searchable" },
-          time_us: 1000,
-        }),
-      ],
-      SEARCH_CONFIG
-    );
-
-    // Search is a no-op — returns all records (no FTS join)
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/test.disabled.collection/1", did: "did:plc:a", collection, rkey: "1", record: { name: "Should Not Be Searchable" }, time_us: 1000 }),
+    ], SEARCH_CONFIG);
     const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" });
-    expect(result.records).toHaveLength(1); // returned because no FTS filtering applied
+    expect(result.records).toHaveLength(1);
   });
 });
 
-describe("search pagination", () => {
+describe.skipIf(!hasFts)("search pagination", () => {
   const collection = "community.lexicon.calendar.event";
 
   beforeEach(async () => {
@@ -302,20 +210,10 @@ describe("search pagination", () => {
   });
 
   it("paginates search results", async () => {
-    const page1 = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Rust",
-      limit: 3,
-    });
+    const page1 = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Rust", limit: 3 });
     expect(page1.records).toHaveLength(3);
     expect(page1.cursor).toBeDefined();
-
-    const page2 = await queryRecords(db, SEARCH_CONFIG, {
-      collection,
-      search: "Rust",
-      limit: 3,
-      cursor: page1.cursor,
-    });
+    const page2 = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Rust", limit: 3, cursor: page1.cursor });
     expect(page2.records).toHaveLength(2);
     expect(page2.cursor).toBeUndefined();
   });

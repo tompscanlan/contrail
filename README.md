@@ -8,13 +8,13 @@ A library for indexing AT Protocol records. Define collections — get automatic
 ## Install
 
 ```bash
-npm install github:flo-bit/contrail
+npm install @atmo-dev/contrail
 ```
 
 ## Usage
 
 ```ts
-import { Contrail } from "contrail";
+import { Contrail } from "@atmo-dev/contrail";
 
 const contrail = new Contrail({
   namespace: "com.example",
@@ -121,7 +121,7 @@ await contrail.notify([uri1, uri2, uri3]);
 Mount the full XRPC API in any framework:
 
 ```ts
-import { createHandler } from "contrail/server";
+import { createHandler } from "@atmo-dev/contrail/server";
 
 const handle = createHandler(contrail);
 // handle: (Request, db?) => Promise<Response>
@@ -148,17 +148,18 @@ export default {
 ### SQLite adapter (Node.js / local dev)
 
 ```ts
-import { SqliteDatabase } from "contrail/sqlite";
-import Database from "better-sqlite3";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 
-const db = new SqliteDatabase(new Database("data.db"));
+const db = createSqliteDatabase("data.db");
 const contrail = new Contrail({ ...config, db });
 ```
+
+> **Note:** The SQLite adapter uses Node's built-in `node:sqlite` (Node 22+). Full-text search (`searchable`) is not supported with this adapter because `node:sqlite` doesn't include the FTS5 extension. Search works on Cloudflare D1 and PostgreSQL.
 
 ### PostgreSQL adapter (Node.js / server)
 
 ```ts
-import { createPostgresDatabase } from "contrail/postgres";
+import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import pg from "pg";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -167,39 +168,6 @@ const contrail = new Contrail({ ...config, db });
 ```
 
 PostgreSQL uses JSONB for record storage, tsvector generated columns for full-text search (instead of FTS5), and `BIGINT` for timestamp columns.
-
-## Testing
-
-### SQLite tests (default)
-
-```bash
-pnpm install
-pnpm test
-```
-
-All tests under `tests/` (except `postgres.test.ts`) run against an in-memory SQLite database with no external dependencies.
-
-### PostgreSQL tests
-
-PostgreSQL integration tests require a running PostgreSQL instance and a dedicated test database.
-
-```bash
-# Create a test database (one-time setup)
-createdb contrail_test
-
-# Run PostgreSQL tests
-TEST_DATABASE_URL="postgresql://user:password@localhost:5432/contrail_test" pnpm test -- tests/postgres.test.ts
-```
-
-The test suite drops and recreates Contrail tables in `beforeEach` — it will **not** touch other databases or schemas.
-
-To run both SQLite and PostgreSQL tests together:
-
-```bash
-TEST_DATABASE_URL="postgresql://user:password@localhost:5432/contrail_test" pnpm test
-```
-
-If `TEST_DATABASE_URL` is not set, PostgreSQL tests are automatically skipped.
 
 ## Examples
 

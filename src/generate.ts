@@ -277,25 +277,16 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
 
   log("Generating admin endpoints...");
 
-  writeLexicon(`${ns}.admin.getCursor`, {
-    lexicon: 1, id: `${ns}.admin.getCursor`,
+  writeLexicon(`${ns}.getCursor`, {
+    lexicon: 1, id: `${ns}.getCursor`,
     defs: { main: { type: "query", description: "Get the current cursor position", output: { encoding: "application/json", schema: { type: "object", properties: { time_us: { type: "integer" }, date: { type: "string" }, seconds_ago: { type: "integer" } } } } } },
   });
 
-  writeLexicon(`${ns}.admin.getOverview`, {
-    lexicon: 1, id: `${ns}.admin.getOverview`,
+  writeLexicon(`${ns}.getOverview`, {
+    lexicon: 1, id: `${ns}.getOverview`,
     defs: { main: { type: "query", description: "Get an overview of all indexed collections", output: { encoding: "application/json", schema: { type: "object", required: ["total_records", "collections"], properties: { total_records: { type: "integer" }, collections: { type: "array", items: { type: "ref", ref: "#collectionStats" } } } } } }, collectionStats: { type: "object", required: ["collection", "records", "unique_users"], properties: { collection: { type: "string" }, records: { type: "integer" }, unique_users: { type: "integer" } } } },
   });
 
-  writeLexicon(`${ns}.admin.sync`, {
-    lexicon: 1, id: `${ns}.admin.sync`,
-    defs: { main: { type: "query", description: "Discover users from relays and backfill their records from PDS", parameters: { type: "params", properties: { concurrency: { type: "integer", minimum: 1, maximum: 50, default: 10 } } }, output: { encoding: "application/json", schema: { type: "object", required: ["discovered", "backfilled", "remaining", "done"], properties: { discovered: { type: "integer" }, backfilled: { type: "integer" }, remaining: { type: "integer" }, done: { type: "boolean" } } } } } },
-  });
-
-  writeLexicon(`${ns}.admin.reset`, {
-    lexicon: 1, id: `${ns}.admin.reset`,
-    defs: { main: { type: "query", description: "Delete all data from all tables", output: { encoding: "application/json", schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } } } } },
-  });
 
   writeLexicon(`${ns}.getProfile`, {
     lexicon: 1, id: `${ns}.getProfile`,

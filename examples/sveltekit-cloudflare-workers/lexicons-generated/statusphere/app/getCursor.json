@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "rsvp.atmo.admin.getCursor",
+  "id": "statusphere.app.getCursor",
   "defs": {
     "main": {
       "type": "query",
