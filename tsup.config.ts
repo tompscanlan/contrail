@@ -12,5 +12,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   tsconfig: "tsconfig.build.json",
-  external: ["better-sqlite3"],
+  external: ["node:sqlite"],
 });

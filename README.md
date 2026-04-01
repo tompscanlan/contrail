@@ -134,12 +134,13 @@ export default {
 ### SQLite adapter (Node.js / local dev)
 
 ```ts
-import { SqliteDatabase } from "@atmo-dev/contrail/sqlite";
-import Database from "better-sqlite3";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 
-const db = new SqliteDatabase(new Database("data.db"));
+const db = createSqliteDatabase("data.db");
 const contrail = new Contrail({ ...config, db });
 ```
+
+> **Note:** The SQLite adapter uses Node's built-in `node:sqlite` (Node 22+). Full-text search (`searchable`) is not supported with this adapter because `node:sqlite` doesn't include the FTS5 extension. Search works on Cloudflare D1, which has FTS5 enabled.
 
 ## Running the example (Cloudflare Workers)
 

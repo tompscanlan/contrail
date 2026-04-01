@@ -1,9 +1,9 @@
-import BetterSqlite3 from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import type { Database, Statement } from "../core/types";
 
 export function createSqliteDatabase(path: string): Database {
-  const raw = new BetterSqlite3(path);
-  raw.pragma("journal_mode = WAL");
+  const raw = new DatabaseSync(path);
+  raw.exec("PRAGMA journal_mode = WAL");
 
   function wrapStatement(sql: string, boundValues: any[] = []): Statement {
     return {
