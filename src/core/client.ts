@@ -18,6 +18,24 @@ export interface ResolvedIdentity {
   pds: string | null;
 }
 
+/** Reject PDS URLs that point to private/internal addresses or non-HTTPS */
+function validatePdsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname;
+    // Block private/internal IP ranges
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return false;
+    if (host.startsWith("10.")) return false;
+    if (host.startsWith("192.168.")) return false;
+    if (host.startsWith("169.254.")) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveViaSlingshot(
   identifier: string
 ): Promise<ResolvedIdentity | undefined> {
@@ -65,13 +83,16 @@ export async function resolvePDS(
   identifier: string
 ): Promise<ResolvedIdentity | undefined> {
   const result = await resolveViaSlingshot(identifier);
-  if (result?.pds) return result;
+  if (result?.pds) {
+    if (!validatePdsUrl(result.pds)) return { ...result, pds: null };
+    return result;
+  }
 
   // Fall back to DID doc resolution (only works for DIDs, not handles)
   if (identifier.startsWith("did:")) {
     try {
       const pds = await getPDSViaDidDoc(identifier as Did);
-      if (pds) {
+      if (pds && validatePdsUrl(pds)) {
         return {
           did: identifier,
           handle: result?.handle ?? null,
@@ -86,15 +107,36 @@ export async function resolvePDS(
   return result;
 }
 
-// In-memory PDS cache + in-flight deduplication
-const pdsCache = new Map<string, string>();
+// In-memory PDS cache with TTL + size limit, plus in-flight deduplication
+const PDS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const PDS_CACHE_MAX = 10_000;
+const pdsCache = new Map<string, { pds: string; at: number }>();
 const pdsInflight = new Map<string, Promise<string | undefined>>();
+
+function pdsCacheGet(did: string): string | undefined {
+  const entry = pdsCache.get(did);
+  if (!entry) return undefined;
+  if (Date.now() - entry.at > PDS_CACHE_TTL) {
+    pdsCache.delete(did);
+    return undefined;
+  }
+  return entry.pds;
+}
+
+function pdsCacheSet(did: string, pds: string): void {
+  // Evict oldest entries if over limit
+  if (pdsCache.size >= PDS_CACHE_MAX) {
+    const first = pdsCache.keys().next().value;
+    if (first) pdsCache.delete(first);
+  }
+  pdsCache.set(did, { pds, at: Date.now() });
+}
 
 export async function getPDS(
   did: Did,
   db?: Database
 ): Promise<string | undefined> {
-  const mem = pdsCache.get(did);
+  const mem = pdsCacheGet(did);
   if (mem) return mem;
 
   // Deduplicate concurrent calls for the same DID
@@ -120,7 +162,7 @@ async function resolvePDSCached(
       .bind(did)
       .first<{ pds: string }>();
     if (cached?.pds) {
-      pdsCache.set(did, cached.pds);
+      pdsCacheSet(did, cached.pds);
       return cached.pds;
     }
   }
@@ -128,7 +170,7 @@ async function resolvePDSCached(
   const resolved = await resolvePDS(did);
   if (!resolved?.pds) return undefined;
 
-  pdsCache.set(did, resolved.pds);
+  pdsCacheSet(did, resolved.pds);
 
   // Persist to DB for future runs
   if (db) {

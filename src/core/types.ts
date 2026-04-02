@@ -106,6 +106,9 @@ export interface ContrailConfig {
   jetstreams?: string[];
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
+  /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
+   *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`. */
+  notify?: boolean | string;
 }
 
 export interface ResolvedRelation {
@@ -237,6 +240,7 @@ export function validateConfig(config: ContrailConfig): void {
     for (const [, rel] of Object.entries(colConfig.relations ?? {})) {
       if (rel.field) validateFieldName(rel.field);
       if (rel.groupBy) validateFieldName(rel.groupBy);
+      if (rel.countDistinct) validateFieldName(rel.countDistinct);
     }
     if (Array.isArray(colConfig.searchable)) {
       for (const field of colConfig.searchable) {

@@ -19,7 +19,7 @@ export function parseHydrateParams(
     if (val) {
       const limit = parseInt(val, 10);
       if (!isNaN(limit) && limit > 0) {
-        relHydrates[relName] = limit;
+        relHydrates[relName] = Math.min(limit, 50);
       }
     }
   }

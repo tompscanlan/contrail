@@ -6,12 +6,14 @@ import { createApp } from "../src/core/router/index";
 import { applyEvents, queryRecords } from "../src/core/db/records";
 import type { Hono } from "hono";
 
+const NOTIFY_CONFIG = { ...TEST_CONFIG, notify: true };
+
 let db: Database;
 let app: Hono;
 
 beforeEach(async () => {
   db = await createTestDbWithSchema();
-  app = createApp(db, TEST_CONFIG);
+  app = createApp(db, NOTIFY_CONFIG);
 });
 
 afterEach(() => {

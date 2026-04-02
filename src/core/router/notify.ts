@@ -141,9 +141,20 @@ export function registerNotifyRoute(
   db: Database,
   config: ContrailConfig
 ) {
+  // Endpoint is off by default. Set config.notify to true or a secret string to enable.
+  if (!config.notify) return;
+
   const ns = config.namespace;
+  const secret = typeof config.notify === "string" ? config.notify : null;
 
   app.post(`/xrpc/${ns}.notifyOfUpdate`, async (c) => {
+    if (secret) {
+      const auth = c.req.header("Authorization");
+      if (auth !== `Bearer ${secret}`) {
+        return c.json({ error: "unauthorized" }, 401);
+      }
+    }
+
     const body = await c.req.json<{ uri?: string; uris?: string[] }>().catch(() => null);
     const uris: string[] = [];
 

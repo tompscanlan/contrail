@@ -116,6 +116,7 @@ async function streamAndFlush(
 
   const buffer: IngestEvent[] = [];
   let flushDue = false;
+  let flushing = false;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const resetFlushTimer = () => {
@@ -124,37 +125,42 @@ async function streamAndFlush(
   };
 
   const flush = async () => {
-    if (buffer.length === 0) return;
+    if (buffer.length === 0 || flushing) return;
+    flushing = true;
     const batch = buffer.splice(0);
     flushDue = false;
     resetFlushTimer();
 
-    await applyEvents(db, batch, config);
+    try {
+      await applyEvents(db, batch, config);
 
-    const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
-    await saveCursor(db, lastTimeUs);
+      const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
+      await saveCursor(db, lastTimeUs);
 
-    // Identity refresh
-    const uniqueDids = [...new Set(batch.map((e) => e.did))];
-    if (uniqueDids.length > 0) {
-      try {
-        await refreshStaleIdentities(db, uniqueDids);
-      } catch (err) {
-        log.warn(`Identity refresh failed: ${err}`);
+      // Identity refresh
+      const uniqueDids = [...new Set(batch.map((e) => e.did))];
+      if (uniqueDids.length > 0) {
+        try {
+          await refreshStaleIdentities(db, uniqueDids);
+        } catch (err) {
+          log.warn(`Identity refresh failed: ${err}`);
+        }
       }
-    }
 
-    // Feed pruning
-    if (config.feeds && Date.now() - state.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
-      const maxItems = Math.max(
-        ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
-      );
-      const pruned = await pruneFeedItems(db, maxItems);
-      if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
-      state.lastFeedPruneMs = Date.now();
-    }
+      // Feed pruning
+      if (config.feeds && Date.now() - state.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
+        const maxItems = Math.max(
+          ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
+        );
+        const pruned = await pruneFeedItems(db, maxItems);
+        if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+        state.lastFeedPruneMs = Date.now();
+      }
 
-    log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
+      log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
+    } finally {
+      flushing = false;
+    }
   };
 
   // Handle abort
