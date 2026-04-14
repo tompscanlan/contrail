@@ -123,6 +123,8 @@ export interface ContrailConfig {
   /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
    *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`. */
   notify?: boolean | string;
+  /** Permissioned spaces configuration. When set, the service exposes space XRPCs. */
+  spaces?: import("./spaces/types").SpacesConfig;
 }
 
 export interface ResolvedRelation {

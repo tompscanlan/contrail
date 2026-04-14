@@ -6,13 +6,22 @@ import { registerAdminRoutes } from "./admin";
 import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
+import { registerSpacesRoutes } from "../spaces/router";
+import type { SpacesRoutesOptions } from "../spaces/router";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
 
+export interface CreateAppOptions {
+  spaces?: SpacesRoutesOptions;
+  /** Separate DB for the spaces tables. Defaults to `db`. */
+  spacesDb?: Database;
+}
+
 export function createApp(
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  options: CreateAppOptions = {}
 ): Hono {
   const app = new Hono();
   app.use("*", cors());
@@ -47,6 +56,7 @@ export function createApp(
   registerCollectionRoutes(app, db, config);
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
+  registerSpacesRoutes(app, options.spacesDb ?? db, config, options.spaces);
 
   return app;
 }

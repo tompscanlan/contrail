@@ -3,6 +3,7 @@ import type { SqlDialect } from "../dialect";
 import { buildFtsSchema, getDialect } from "../dialect";
 import { getRelationField, countColumnName, recordsTableName, resolveConfig } from "../types";
 import { getSearchableFields } from "../search";
+import { buildSpacesSchema } from "../spaces/schema";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
@@ -197,9 +198,15 @@ async function runMigrations(db: Database): Promise<void> {
   }
 }
 
+export interface InitSchemaOptions {
+  /** Separate DB for the spaces tables. Defaults to the main `db`. */
+  spacesDb?: Database;
+}
+
 export async function initSchema(
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  options: InitSchemaOptions = {}
 ): Promise<void> {
   const dialect = getDialect(db);
   const baseStatements = buildBaseSchema(dialect).split(";")
@@ -209,9 +216,20 @@ export async function initSchema(
   const indexStatements = buildDynamicIndexes(config, dialect);
   const ftsStatements = buildFtsTables(config, dialect);
   const feedStatements = buildFeedTables(config, dialect);
-  const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...feedStatements];
+
+  const spacesDb = options.spacesDb;
+  const spacesSharesMainDb = !spacesDb || spacesDb === db;
+  const inlineSpacesStatements =
+    config.spaces && spacesSharesMainDb ? buildSpacesSchema(db) : [];
+
+  const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...feedStatements, ...inlineSpacesStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
+
+  if (config.spaces && spacesDb && !spacesSharesMainDb) {
+    const spacesStatements = buildSpacesSchema(spacesDb);
+    await spacesDb.batch(spacesStatements.map((s) => spacesDb.prepare(s)));
+  }
 
   // FTS5 may not be available (e.g. node:sqlite) — skip gracefully
   for (const stmt of ftsStatements) {

@@ -23,6 +23,9 @@ importers:
       '@atcute/lexicons':
         specifier: ^1.2.7
         version: 1.2.7
+      '@atcute/xrpc-server':
+        specifier: ^0.1.12
+        version: 0.1.12
       hono:
         specifier: ^4.12.8
         version: 4.12.8
@@ -84,6 +87,9 @@ packages:
   '@atcute/crypto@2.4.0':
     resolution: {integrity: sha512-XtEeDaSgfr92C7b1VDRvd3F9pI8tVUyy8PJAeu8IWQC7+e/GXZOSl58uWh5YP/9p1Lsa0I16uKHwogygxEwlMQ==}
 
+  '@atcute/crypto@2.4.1':
+    resolution: {integrity: sha512-tJ3Pi/XYcAsABKtqSlSOTKfO5YiQ4XdqlTuPS8HiRZSezOPcXBFFzAFWpSIJPURbVPFQL3LLrrK0Ea24wl5qeQ==}
+
   '@atcute/identity-resolver@1.2.2':
     resolution: {integrity: sha512-eUh/UH4bFvuXS0X7epYCeJC/kj4rbBXfSRumLEH4smMVwNOgTo7cL/0Srty+P/qVPoZEyXdfEbS0PHJyzoXmHw==}
     peerDependencies:
@@ -91,6 +97,9 @@ packages:
 
   '@atcute/identity@1.1.3':
     resolution: {integrity: sha512-oIqPoI8TwWeQxvcLmFEZLdN2XdWcaLVtlm8pNk0E72As9HNzzD9pwKPrLr3rmTLRIoULPPFmq9iFNsTeCIU9ng==}
+
+  '@atcute/identity@1.1.4':
+    resolution: {integrity: sha512-RCw1IqflfuSYCxK5m0lZCm0UnvIzcUnuhngiBhJEJb9a9Mc2SEf1xP3H8N5r8pvEH1LoAYd6/zrvCNU+uy9esw==}
 
   '@atcute/jetstream@1.1.2':
     resolution: {integrity: sha512-u6p/h2xppp7LE6W/9xErAJ6frfN60s8adZuCKtfAaaBBiiYbb1CfpzN8Uc+2qtJZNorqGvuuDb5572Jmh7yHBQ==}
@@ -120,6 +129,9 @@ packages:
   '@atcute/multibase@1.1.8':
     resolution: {integrity: sha512-pJgtImMZKCjqwRbu+2GzB+4xQjKBXDwdZOzeqe0u97zYKRGftpGYGvYv3+pMe2xXe+msDyu7Nv8iJp+U14otTA==}
 
+  '@atcute/multibase@1.2.0':
+    resolution: {integrity: sha512-ZK2GRra+qIYq9nNuQB52m2ul0hOmCQEtPobGfTSUxm7pF0OGEkWGkWHugFhNEDVzHzTwPxHp6VGotdZFue4lYQ==}
+
   '@atcute/repo@0.1.3':
     resolution: {integrity: sha512-kN4gkrkQgJwI5xkVQ9zSdI8ULR47uH48EdJdjMvKAWsSDu8zKYd8ZQ6n778qa6o3WYEq02v9QVf7pzeU+3fYVA==}
 
@@ -140,6 +152,9 @@ packages:
 
   '@atcute/varint@2.0.0':
     resolution: {integrity: sha512-CEY/oVK/nVpL4e5y3sdenLETDL6/Xu5xsE/0TupK+f0Yv8jcD60t2gD8SHROWSvUwYLdkjczLCSA7YrtnjCzWw==}
+
+  '@atcute/xrpc-server@0.1.12':
+    resolution: {integrity: sha512-70KIerQlljp5+s6t0u6YNN9klEboQUZa2hhoi/hmXIO1cIKEORettTMctnyjfcCJaSfAuj42dxPu51GTZBlm8w==}
 
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
@@ -1287,6 +1302,11 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nanoid@5.1.7:
+    resolution: {integrity: sha512-ua3NDgISf6jdwezAheMOk4mbE1LXjm1DfMUDMuJf4AqxLFK3ccGpgWizwa5YV7Yz9EpXwEaWoRXSb/BnV0t5dQ==}
+    engines: {node: ^18 || >=20}
+    hasBin: true
+
   object-assign@4.1.1:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
     engines: {node: '>=0.10.0'}
@@ -1815,6 +1835,12 @@ snapshots:
       '@atcute/uint8array': 1.1.1
       '@noble/secp256k1': 3.0.0
 
+  '@atcute/crypto@2.4.1':
+    dependencies:
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.1
+      '@noble/secp256k1': 3.0.0
+
   '@atcute/identity-resolver@1.2.2(@atcute/identity@1.1.3)':
     dependencies:
       '@atcute/identity': 1.1.3
@@ -1822,9 +1848,21 @@ snapshots:
       '@atcute/util-fetch': 1.0.5
       '@badrap/valita': 0.4.6
 
+  '@atcute/identity-resolver@1.2.2(@atcute/identity@1.1.4)':
+    dependencies:
+      '@atcute/identity': 1.1.4
+      '@atcute/lexicons': 1.2.7
+      '@atcute/util-fetch': 1.0.5
+      '@badrap/valita': 0.4.6
+
   '@atcute/identity@1.1.3':
     dependencies:
       '@atcute/lexicons': 1.2.7
+      '@badrap/valita': 0.4.6
+
+  '@atcute/identity@1.1.4':
+    dependencies:
+      '@atcute/lexicons': 1.2.9
       '@badrap/valita': 0.4.6
 
   '@atcute/jetstream@1.1.2':
@@ -1893,6 +1931,10 @@ snapshots:
     dependencies:
       '@atcute/uint8array': 1.1.1
 
+  '@atcute/multibase@1.2.0':
+    dependencies:
+      '@atcute/uint8array': 1.1.1
+
   '@atcute/repo@0.1.3':
     dependencies:
       '@atcute/car': 5.1.1
@@ -1920,6 +1962,18 @@ snapshots:
       unicode-segmenter: 0.14.5
 
   '@atcute/varint@2.0.0': {}
+
+  '@atcute/xrpc-server@0.1.12':
+    dependencies:
+      '@atcute/cbor': 2.3.2
+      '@atcute/crypto': 2.4.1
+      '@atcute/identity': 1.1.4
+      '@atcute/identity-resolver': 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lexicons': 1.2.9
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.1
+      '@badrap/valita': 0.4.6
+      nanoid: 5.1.7
 
   '@babel/runtime@7.29.2': {}
 
@@ -2908,6 +2962,8 @@ snapshots:
       thenify-all: 1.6.0
 
   nanoid@3.3.11: {}
+
+  nanoid@5.1.7: {}
 
   object-assign@4.1.1: {}
 

@@ -5,7 +5,8 @@
   "type": "module",
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "lexicons/tools/atmo/**/*.json"
   ],
   "exports": {
     ".": {
@@ -27,7 +28,12 @@
     "./generate": {
       "types": "./dist/generate.d.ts",
       "import": "./dist/generate.js"
-    }
+    },
+    "./lexicons": {
+      "types": "./dist/lexicons.d.ts",
+      "import": "./dist/lexicons.js"
+    },
+    "./lexicons/*.json": "./lexicons/*.json"
   },
   "repository": {
     "type": "git",
@@ -62,6 +68,7 @@
     "@atcute/identity-resolver": "^1.2.2",
     "@atcute/jetstream": "^1.0.2",
     "@atcute/lexicons": "^1.2.7",
+    "@atcute/xrpc-server": "^0.1.12",
     "hono": "^4.12.8"
   },
   "devDependencies": {

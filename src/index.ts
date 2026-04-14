@@ -29,3 +29,23 @@ export type { NotifyResult } from "./core/router/notify";
 
 export { runPersistent } from "./core/persistent";
 export type { PersistentIngestOptions } from "./core/persistent";
+
+// Spaces
+export type {
+  SpacesConfig,
+  CollectionPolicy,
+  ReadMode,
+  WriteMode,
+  AppPolicy,
+  AppPolicyMode,
+  SpaceRow,
+  SpaceMemberRow,
+  StoredRecord,
+  StorageAdapter,
+  ListOptions,
+  ListResult,
+  ListSpacesOptions,
+  CollectionCount,
+} from "./core/spaces/types";
+export { HostedAdapter } from "./core/spaces/adapter";
+export { nextTid } from "./core/spaces/tid";
