@@ -3,6 +3,8 @@ import type {
   AppPolicy,
   CollectionCount,
   CollectionPolicy,
+  CreateInviteInput,
+  InviteRow,
   ListOptions,
   ListResult,
   ListSpacesOptions,
@@ -51,6 +53,21 @@ function mapMemberRow(row: any): SpaceMemberRow {
     perms: row.perms,
     addedAt: toNum(row.added_at),
     addedBy: row.added_by ?? null,
+  };
+}
+
+function mapInviteRow(row: any): InviteRow {
+  return {
+    tokenHash: row.token_hash,
+    spaceUri: row.space_uri,
+    perms: row.perms,
+    expiresAt: row.expires_at == null ? null : toNum(row.expires_at),
+    maxUses: row.max_uses == null ? null : Number(row.max_uses),
+    usedCount: Number(row.used_count),
+    createdBy: row.created_by,
+    createdAt: toNum(row.created_at),
+    revokedAt: row.revoked_at == null ? null : toNum(row.revoked_at),
+    note: row.note ?? null,
   };
 }
 
@@ -193,6 +210,81 @@ export class HostedAdapter implements StorageAdapter {
       .bind(spaceUri)
       .all<any>();
     return results.map(mapMemberRow);
+  }
+
+  async createInvite(input: CreateInviteInput): Promise<InviteRow> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO spaces_invites (token_hash, space_uri, perms, expires_at, max_uses, used_count, created_by, created_at, note)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`
+      )
+      .bind(
+        input.tokenHash,
+        input.spaceUri,
+        input.perms,
+        input.expiresAt,
+        input.maxUses,
+        input.createdBy,
+        now,
+        input.note
+      )
+      .run();
+    return {
+      tokenHash: input.tokenHash,
+      spaceUri: input.spaceUri,
+      perms: input.perms,
+      expiresAt: input.expiresAt,
+      maxUses: input.maxUses,
+      usedCount: 0,
+      createdBy: input.createdBy,
+      createdAt: now,
+      revokedAt: null,
+      note: input.note,
+    };
+  }
+
+  async listInvites(
+    spaceUri: string,
+    options: { includeRevoked?: boolean } = {}
+  ): Promise<InviteRow[]> {
+    const sql = options.includeRevoked
+      ? `SELECT * FROM spaces_invites WHERE space_uri = ? ORDER BY created_at DESC`
+      : `SELECT * FROM spaces_invites WHERE space_uri = ? AND revoked_at IS NULL ORDER BY created_at DESC`;
+    const { results } = await this.db.prepare(sql).bind(spaceUri).all<any>();
+    return results.map(mapInviteRow);
+  }
+
+  async revokeInvite(tokenHash: string): Promise<boolean> {
+    const res = await this.db
+      .prepare(`UPDATE spaces_invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`)
+      .bind(Date.now(), tokenHash)
+      .run();
+    const changes = (res as any)?.changes ?? (res as any)?.meta?.changes ?? 0;
+    return Number(changes) > 0;
+  }
+
+  async redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null> {
+    // Atomic: increment used_count only if the invite is usable right now.
+    const res = await this.db
+      .prepare(
+        `UPDATE spaces_invites
+         SET used_count = used_count + 1
+         WHERE token_hash = ?
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+           AND (max_uses IS NULL OR used_count < max_uses)`
+      )
+      .bind(tokenHash, now)
+      .run();
+    const changes = (res as any)?.changes ?? (res as any)?.meta?.changes ?? 0;
+    if (Number(changes) === 0) return null;
+
+    const row = await this.db
+      .prepare(`SELECT * FROM spaces_invites WHERE token_hash = ?`)
+      .bind(tokenHash)
+      .first<any>();
+    return row ? mapInviteRow(row) : null;
   }
 
   async putRecord(record: StoredRecord): Promise<void> {

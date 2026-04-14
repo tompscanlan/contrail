@@ -5,7 +5,8 @@ import { checkAccess, resolveCollectionPolicy } from "./acl";
 import type { ServiceAuth } from "./auth";
 import { createServiceAuthMiddleware } from "./auth";
 import { nextTid } from "./tid";
-import type { CollectionPolicy, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
+import { generateInviteToken, hashInviteToken } from "./invite-token";
+import type { CollectionPolicy, InviteRow, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
 import type { Did } from "@atcute/lexicons";
 
 const SPACE = "tools.atmo.space";
@@ -186,6 +187,81 @@ export function registerSpacesRoutes(
     return c.json({ space: publicSpaceView(space, true) });
   });
 
+  // Invites
+  app.post(`/xrpc/${SPACE}.invite.create`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; perms?: string; expiresAt?: number; maxUses?: number; note?: string }
+      | null;
+    if (!body?.spaceUri) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    }
+    const space = await adapter.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+
+    const token = generateInviteToken();
+    const tokenHash = await hashInviteToken(token);
+    const invite = await adapter.createInvite({
+      spaceUri: body.spaceUri,
+      tokenHash,
+      perms: body.perms ?? "member",
+      expiresAt: body.expiresAt ?? null,
+      maxUses: body.maxUses ?? null,
+      createdBy: sa.issuer,
+      note: body.note ?? null,
+    });
+    return c.json({ token, invite: publicInviteView(invite) });
+  });
+
+  app.post(`/xrpc/${SPACE}.invite.redeem`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as { token?: string } | null;
+    if (!body?.token) {
+      return c.json({ error: "InvalidRequest", message: "token required" }, 400);
+    }
+    const tokenHash = await hashInviteToken(body.token);
+    const invite = await adapter.redeemInvite(tokenHash, Date.now());
+    if (!invite) {
+      return c.json({ error: "InvalidInvite", reason: "expired-revoked-or-exhausted" }, 400);
+    }
+    await adapter.addMember(invite.spaceUri, sa.issuer, invite.perms, invite.createdBy);
+    return c.json({ spaceUri: invite.spaceUri, perms: invite.perms });
+  });
+
+  app.get(`/xrpc/${SPACE}.invite.list`, auth, async (c) => {
+    const sa = getAuth(c);
+    const spaceUri = c.req.query("spaceUri");
+    if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    const space = await adapter.getSpace(spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+    const includeRevoked = c.req.query("includeRevoked") === "true";
+    const invites = await adapter.listInvites(spaceUri, { includeRevoked });
+    return c.json({ invites: invites.map(publicInviteView) });
+  });
+
+  app.post(`/xrpc/${SPACE}.invite.revoke`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; tokenHash?: string }
+      | null;
+    if (!body?.spaceUri || !body.tokenHash) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri and tokenHash required" }, 400);
+    }
+    const space = await adapter.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+    const ok = await adapter.revokeInvite(body.tokenHash);
+    return c.json({ ok });
+  });
+
   app.post(`/xrpc/${SPACE}.admin.addMember`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
@@ -216,6 +292,21 @@ function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {
   const auth = c.get("serviceAuth") as ServiceAuth | undefined;
   if (!auth) throw new Error("service auth not set");
   return auth;
+}
+
+function publicInviteView(invite: InviteRow) {
+  return {
+    tokenHash: invite.tokenHash,
+    spaceUri: invite.spaceUri,
+    perms: invite.perms,
+    expiresAt: invite.expiresAt,
+    maxUses: invite.maxUses,
+    usedCount: invite.usedCount,
+    createdBy: invite.createdBy,
+    createdAt: invite.createdAt,
+    revokedAt: invite.revokedAt,
+    note: invite.note,
+  };
 }
 
 function publicSpaceView(space: SpaceRow, forOwner: boolean) {

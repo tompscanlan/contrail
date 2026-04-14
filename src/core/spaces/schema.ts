@@ -42,6 +42,20 @@ export function buildSpacesSchema(db: Database): string[] {
       PRIMARY KEY (space_uri, did)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_spaces_members_did ON spaces_members(did)`,
+
+    `CREATE TABLE IF NOT EXISTS spaces_invites (
+      token_hash TEXT PRIMARY KEY,
+      space_uri TEXT NOT NULL,
+      perms TEXT NOT NULL,
+      expires_at ${dialect.bigintType},
+      max_uses INTEGER,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL,
+      created_at ${dialect.bigintType} NOT NULL,
+      revoked_at ${dialect.bigintType},
+      note TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_invites_space ON spaces_invites(space_uri, created_at DESC)`,
   ];
 }
 

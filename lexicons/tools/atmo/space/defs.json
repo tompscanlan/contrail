@@ -57,6 +57,22 @@
         "mode": { "type": "string", "knownValues": ["allow", "deny"], "description": "'allow' = default-allow with apps[] as denylist; 'deny' = default-deny with apps[] as allowlist." },
         "apps": { "type": "array", "items": { "type": "string" } }
       }
+    },
+    "inviteView": {
+      "type": "object",
+      "required": ["tokenHash", "spaceUri", "perms", "usedCount", "createdBy", "createdAt"],
+      "properties": {
+        "tokenHash": { "type": "string" },
+        "spaceUri":  { "type": "string", "format": "at-uri" },
+        "perms":     { "type": "string" },
+        "expiresAt": { "type": "integer" },
+        "maxUses":   { "type": "integer" },
+        "usedCount": { "type": "integer" },
+        "createdBy": { "type": "string", "format": "did" },
+        "createdAt": { "type": "integer" },
+        "revokedAt": { "type": "integer" },
+        "note":      { "type": "string" }
+      }
     }
   }
 }

@@ -46,6 +46,10 @@ export type {
   ListResult,
   ListSpacesOptions,
   CollectionCount,
+  InviteRow,
+  CreateInviteInput,
+  RedeemInviteResult,
 } from "./core/spaces/types";
 export { HostedAdapter } from "./core/spaces/adapter";
 export { nextTid } from "./core/spaces/tid";
+export { generateInviteToken, hashInviteToken } from "./core/spaces/invite-token";

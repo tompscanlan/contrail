@@ -87,6 +87,34 @@ export interface CollectionCount {
   count: number;
 }
 
+export interface InviteRow {
+  tokenHash: string;
+  spaceUri: string;
+  perms: string;
+  expiresAt: number | null;
+  maxUses: number | null;
+  usedCount: number;
+  createdBy: string;
+  createdAt: number;
+  revokedAt: number | null;
+  note: string | null;
+}
+
+export interface CreateInviteInput {
+  spaceUri: string;
+  tokenHash: string;
+  perms: string;
+  expiresAt: number | null;
+  maxUses: number | null;
+  createdBy: string;
+  note: string | null;
+}
+
+export interface RedeemInviteResult {
+  spaceUri: string;
+  perms: string;
+}
+
 export interface StorageAdapter {
   // Space lifecycle
   createSpace(space: Omit<SpaceRow, "createdAt" | "deletedAt">): Promise<SpaceRow>;
@@ -101,6 +129,13 @@ export interface StorageAdapter {
   removeMember(spaceUri: string, did: string): Promise<void>;
   getMember(spaceUri: string, did: string): Promise<SpaceMemberRow | null>;
   listMembers(spaceUri: string): Promise<SpaceMemberRow[]>;
+
+  // Invites
+  createInvite(input: CreateInviteInput): Promise<InviteRow>;
+  listInvites(spaceUri: string, options?: { includeRevoked?: boolean }): Promise<InviteRow[]>;
+  revokeInvite(tokenHash: string): Promise<boolean>;
+  /** Atomically mark an invite as used (one atomic UPDATE). Returns the row if usable, null otherwise. */
+  redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null>;
 
   // Records
   putRecord(record: StoredRecord): Promise<void>;
