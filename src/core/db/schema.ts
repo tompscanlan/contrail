@@ -247,6 +247,7 @@ export function buildFtsTables(
 const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
+  "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
 ];
 
 async function runMigrations(db: Database): Promise<void> {

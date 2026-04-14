@@ -9,10 +9,11 @@
         "type": "params",
         "required": ["spaceUri", "collection", "author", "rkey"],
         "properties": {
-          "spaceUri":   { "type": "string", "format": "at-uri" },
-          "collection": { "type": "string", "format": "nsid" },
-          "author":     { "type": "string", "format": "did" },
-          "rkey":       { "type": "string" }
+          "spaceUri":    { "type": "string", "format": "at-uri" },
+          "collection":  { "type": "string", "format": "nsid" },
+          "author":      { "type": "string", "format": "did" },
+          "rkey":        { "type": "string" },
+          "inviteToken": { "type": "string", "description": "Read-grant invite token. When supplied, replaces JWT auth for this read." }
         }
       },
       "output": {

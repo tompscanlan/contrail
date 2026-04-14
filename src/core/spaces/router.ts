@@ -1,12 +1,18 @@
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { ContrailConfig, Database } from "../types";
 import { HostedAdapter } from "./adapter";
 import { checkAccess } from "./acl";
 import type { ServiceAuth } from "./auth";
-import { buildVerifier, createServiceAuthMiddleware } from "./auth";
+import {
+  buildVerifier,
+  checkInviteReadGrant,
+  createServiceAuthMiddleware,
+  extractInviteToken,
+  verifyServiceAuthRequest,
+} from "./auth";
 import { nextTid } from "./tid";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
-import type { InviteRow, MemberPerm, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
+import type { InviteKind, InviteRow, MemberPerm, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
 import type { Did } from "@atcute/lexicons";
 
 export interface SpacesRoutesOptions {
@@ -27,9 +33,43 @@ export function registerSpacesRoutes(
   if (!spacesConfig) return;
 
   const adapter = options.adapter ?? ctx?.adapter ?? new HostedAdapter(db, config);
+  const verifier = ctx?.verifier ?? buildVerifier(spacesConfig);
   const auth =
-    options.authMiddleware ??
-    (ctx ? createServiceAuthMiddleware(ctx.verifier) : buildAuthMiddleware(spacesConfig));
+    options.authMiddleware ?? createServiceAuthMiddleware(verifier);
+
+  /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
+   *  present so anonymous bearer reads don't 401 before the route handler can
+   *  validate the token. The route handler is responsible for actually checking
+   *  the token (via `authorizeRead`). */
+  const readAuth: MiddlewareHandler = async (c, next) => {
+    if (extractInviteToken(c.req.raw)) {
+      await next();
+      return;
+    }
+    return auth(c, next);
+  };
+
+  /** Authorize a read request: either a valid service-auth JWT (which also
+   *  identifies the caller for member checks downstream) or a valid read-grant
+   *  invite token bearer (`?inviteToken=...` or
+   *  `Authorization: Bearer atmo-invite:<token>`). */
+  async function authorizeRead(
+    c: Context,
+    spaceUri: string
+  ): Promise<{ via: "token" } | { via: "jwt"; sa: ServiceAuth } | Response> {
+    const rawToken = extractInviteToken(c.req.raw);
+    if (rawToken) {
+      const ok = await checkInviteReadGrant(adapter, rawToken, spaceUri, hashInviteToken);
+      if (!ok) return c.json({ error: "Forbidden", reason: "invalid-invite-token" }, 403);
+      return { via: "token" };
+    }
+    const sa = c.get("serviceAuth") as ServiceAuth | undefined;
+    if (sa) return { via: "jwt", sa };
+    return c.json(
+      { error: "AuthRequired", message: "JWT or read-grant invite token required" },
+      401
+    );
+  }
 
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
@@ -72,13 +112,21 @@ export function registerSpacesRoutes(
     return c.json({ members });
   });
 
-  app.get(`/xrpc/${SPACE}.getSpace`, auth, async (c) => {
+  app.get(`/xrpc/${SPACE}.getSpace`, readAuth, async (c) => {
     const uri = c.req.query("uri");
     if (!uri) return c.json({ error: "InvalidRequest", message: "uri required" }, 400);
     const space = await adapter.getSpace(uri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const sa = getAuth(c);
+    const authz = await authorizeRead(c, uri);
+    if (authz instanceof Response) return authz;
+
+    if (authz.via === "token") {
+      // Anonymous read-token bearer — show non-owner space view.
+      return c.json({ space: publicSpaceView(space, false) });
+    }
+
+    const sa = authz.sa;
     const isOwner = sa.issuer === space.ownerDid;
     const member = isOwner ? null : await adapter.getMember(uri, sa.issuer);
     if (!isOwner && !member) {
@@ -87,8 +135,7 @@ export function registerSpacesRoutes(
     return c.json({ space: publicSpaceView(space, isOwner) });
   });
 
-  app.get(`/xrpc/${SPACE}.listRecords`, auth, async (c) => {
-    const sa = getAuth(c);
+  app.get(`/xrpc/${SPACE}.listRecords`, readAuth, async (c) => {
     const spaceUri = c.req.query("spaceUri");
     const collection = c.req.query("collection");
     if (!spaceUri || !collection) {
@@ -97,16 +144,22 @@ export function registerSpacesRoutes(
     const space = await adapter.getSpace(spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await adapter.getMember(spaceUri, sa.issuer);
-    const result = checkAccess({
-      op: "read",
-      space,
-      callerDid: sa.issuer,
-      member,
-      clientId: sa.clientId,
-    });
-    if (!result.allow) {
-      return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    const authz = await authorizeRead(c, spaceUri);
+    if (authz instanceof Response) return authz;
+
+    if (authz.via === "jwt") {
+      const sa = authz.sa;
+      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const result = checkAccess({
+        op: "read",
+        space,
+        callerDid: sa.issuer,
+        member,
+        clientId: sa.clientId,
+      });
+      if (!result.allow) {
+        return c.json({ error: "Forbidden", reason: result.reason }, 403);
+      }
     }
 
     const list = await adapter.listRecords(spaceUri, collection, {
@@ -117,8 +170,7 @@ export function registerSpacesRoutes(
     return c.json(list);
   });
 
-  app.get(`/xrpc/${SPACE}.getRecord`, auth, async (c) => {
-    const sa = getAuth(c);
+  app.get(`/xrpc/${SPACE}.getRecord`, readAuth, async (c) => {
     const spaceUri = c.req.query("spaceUri");
     const collection = c.req.query("collection");
     const author = c.req.query("author");
@@ -129,16 +181,22 @@ export function registerSpacesRoutes(
     const space = await adapter.getSpace(spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await adapter.getMember(spaceUri, sa.issuer);
-    const result = checkAccess({
-      op: "read",
-      space,
-      callerDid: sa.issuer,
-      member,
-      clientId: sa.clientId,
-      targetAuthorDid: author,
-    });
-    if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    const authz = await authorizeRead(c, spaceUri);
+    if (authz instanceof Response) return authz;
+
+    if (authz.via === "jwt") {
+      const sa = authz.sa;
+      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const result = checkAccess({
+        op: "read",
+        space,
+        callerDid: sa.issuer,
+        member,
+        clientId: sa.clientId,
+        targetAuthorDid: author,
+      });
+      if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    }
 
     const record = await adapter.getRecord(spaceUri, collection, author, rkey);
     if (!record) return c.json({ error: "NotFound" }, 404);
@@ -245,10 +303,21 @@ export function registerSpacesRoutes(
   app.post(`/xrpc/${SPACE}.invite.create`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; perms?: MemberPerm; expiresAt?: number; maxUses?: number; note?: string }
+      | {
+          spaceUri?: string;
+          kind?: InviteKind;
+          perms?: MemberPerm;
+          expiresAt?: number;
+          maxUses?: number;
+          note?: string;
+        }
       | null;
     if (!body?.spaceUri) {
       return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    }
+    const kind: InviteKind = body.kind ?? "join";
+    if (kind !== "join" && kind !== "read" && kind !== "read-join") {
+      return c.json({ error: "InvalidRequest", message: "kind must be 'join', 'read', or 'read-join'" }, 400);
     }
     const space = await adapter.getSpace(body.spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
@@ -261,6 +330,7 @@ export function registerSpacesRoutes(
     const invite = await adapter.createInvite({
       spaceUri: body.spaceUri,
       tokenHash,
+      kind,
       perms: body.perms ?? "write",
       expiresAt: body.expiresAt ?? null,
       maxUses: body.maxUses ?? null,
@@ -369,6 +439,7 @@ function publicInviteView(invite: InviteRow) {
   return {
     tokenHash: invite.tokenHash,
     spaceUri: invite.spaceUri,
+    kind: invite.kind,
     perms: invite.perms,
     expiresAt: invite.expiresAt,
     maxUses: invite.maxUses,

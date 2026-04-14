@@ -4,12 +4,13 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get metadata for a single space. Caller must be a member or the owner.",
+      "description": "Get metadata for a single space. Caller must be a member, the owner, or hold a read-grant invite token.",
       "parameters": {
         "type": "params",
         "required": ["uri"],
         "properties": {
-          "uri": { "type": "string", "format": "at-uri" }
+          "uri":         { "type": "string", "format": "at-uri" },
+          "inviteToken": { "type": "string", "description": "Read-grant invite token. When supplied, replaces JWT auth for this read." }
         }
       },
       "output": {

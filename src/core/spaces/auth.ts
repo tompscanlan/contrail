@@ -102,3 +102,36 @@ export async function verifyServiceAuthRequest(
     lxm: result.value.lxm,
   };
 }
+
+/** Pull a read-grant invite token off the request — query string `?inviteToken=`
+ *  or `Authorization: Bearer atmo-invite:<token>`. Returns the raw token (not
+ *  hashed) or null. Routes hash + look up via the adapter. */
+export function extractInviteToken(request: Request): string | null {
+  const url = new URL(request.url);
+  const q = url.searchParams.get("inviteToken");
+  if (q) return q.trim();
+  const header = request.headers.get("Authorization");
+  if (header?.startsWith("Bearer atmo-invite:")) {
+    return header.slice("Bearer atmo-invite:".length).trim();
+  }
+  return null;
+}
+
+/** Validate a read-grant invite token against a target spaceUri. Returns true
+ *  if the token exists, scopes to this space, has a kind that grants read
+ *  (`read` or `read-join`), and is not expired/revoked. */
+export async function checkInviteReadGrant(
+  adapter: { getInvite(tokenHash: string): Promise<{ spaceUri: string; kind: string; revokedAt: number | null; expiresAt: number | null } | null> },
+  rawToken: string,
+  spaceUri: string,
+  hashFn: (token: string) => Promise<string>
+): Promise<boolean> {
+  const tokenHash = await hashFn(rawToken);
+  const invite = await adapter.getInvite(tokenHash);
+  if (!invite) return false;
+  if (invite.spaceUri !== spaceUri) return false;
+  if (invite.kind !== "read" && invite.kind !== "read-join") return false;
+  if (invite.revokedAt != null) return false;
+  if (invite.expiresAt != null && invite.expiresAt <= Date.now()) return false;
+  return true;
+}

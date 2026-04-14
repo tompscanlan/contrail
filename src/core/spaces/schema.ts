@@ -39,6 +39,7 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
     `CREATE TABLE IF NOT EXISTS spaces_invites (
       token_hash TEXT PRIMARY KEY,
       space_uri TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'join',
       perms TEXT NOT NULL,
       expires_at ${dialect.bigintType},
       max_uses INTEGER,

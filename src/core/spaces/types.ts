@@ -78,9 +78,16 @@ export interface CollectionCount {
   count: number;
 }
 
+/** What a token holder can do with this invite.
+ *  - `'join'`: must be redeemed while signed in; becomes a member with `perms`.
+ *  - `'read'`: bearer-only — token itself grants read access to the space; cannot be redeemed.
+ *  - `'read-join'`: both — anonymous holders read; signed-in holders may also redeem to join. */
+export type InviteKind = "join" | "read" | "read-join";
+
 export interface InviteRow {
   tokenHash: string;
   spaceUri: string;
+  kind: InviteKind;
   perms: MemberPerm;
   expiresAt: number | null;
   maxUses: number | null;
@@ -94,6 +101,7 @@ export interface InviteRow {
 export interface CreateInviteInput {
   spaceUri: string;
   tokenHash: string;
+  kind: InviteKind;
   perms: MemberPerm;
   expiresAt: number | null;
   maxUses: number | null;
@@ -124,7 +132,10 @@ export interface StorageAdapter {
   createInvite(input: CreateInviteInput): Promise<InviteRow>;
   listInvites(spaceUri: string, options?: { includeRevoked?: boolean }): Promise<InviteRow[]>;
   revokeInvite(tokenHash: string): Promise<boolean>;
-  /** Atomically mark an invite as used (one atomic UPDATE). Returns the row if usable, null otherwise. */
+  /** Look up an invite without consuming it. Used to validate read-token bearer access. */
+  getInvite(tokenHash: string): Promise<InviteRow | null>;
+  /** Atomically mark a join-capable invite as used. Returns the row if usable
+   *  (kind allows join, not expired/revoked/exhausted), null otherwise. */
   redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null>;
 
   // Records

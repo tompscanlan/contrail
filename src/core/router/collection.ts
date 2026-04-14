@@ -16,8 +16,9 @@ import { resolveProfiles, collectDids } from "./profiles";
 import { resolveActor } from "../identity";
 import type { FormattedRecord } from "./helpers";
 import { formatRecord, parseIntParam, fieldToParam } from "./helpers";
-import { verifyServiceAuthRequest } from "../spaces/auth";
+import { verifyServiceAuthRequest, extractInviteToken, checkInviteReadGrant } from "../spaces/auth";
 import { checkAccess } from "../spaces/acl";
+import { hashInviteToken } from "../spaces/invite-token";
 import type { SpacesContext } from ".";
 import type { Nsid } from "@atcute/lexicons";
 
@@ -206,18 +207,45 @@ export function registerCollectionRoutes(
     c: Context,
     spaceUri: string,
     op: "read"
-  ): Promise<Response | { callerDid: string; clientId?: string }> {
+  ): Promise<Response | { callerDid?: string; clientId?: string; viaInviteToken?: boolean }> {
     if (!spacesCtx) {
       return c.json(
         { error: "InvalidRequest", message: "spaces not configured on this service" },
         501
       );
     }
+
+    // Read-token path: anonymous bearer access via `?inviteToken=...` (or
+    // `Authorization: Bearer atmo-invite:<token>`). Token must exist, be
+    // unexpired/unrevoked, scoped to this space, and have a kind that grants
+    // read (`read` or `read-join`). Token kind cannot grant write — caller must
+    // separately redeem to become a member for any non-read op.
+    if (op === "read") {
+      const rawToken = extractInviteToken(c.req.raw);
+      if (rawToken) {
+        const ok = await checkInviteReadGrant(
+          spacesCtx.adapter,
+          rawToken,
+          spaceUri,
+          hashInviteToken
+        );
+        if (ok) {
+          const space = await spacesCtx.adapter.getSpace(spaceUri);
+          if (!space) return c.json({ error: "NotFound" }, 404);
+          return { viaInviteToken: true };
+        }
+        return c.json(
+          { error: "Forbidden", reason: "invalid-invite-token" },
+          403
+        );
+      }
+    }
+
     const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
     const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
     if (!auth) {
       return c.json(
-        { error: "AuthRequired", message: "spaceUri requires a valid service-auth JWT" },
+        { error: "AuthRequired", message: "spaceUri requires a valid service-auth JWT or read-grant invite token" },
         401
       );
     }

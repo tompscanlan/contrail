@@ -174,4 +174,75 @@ describe("invite e2e", () => {
     });
     expect(revokeRes.status).toBe(403);
   });
+
+  it("read-token grants anonymous read but cannot be redeemed", async () => {
+    // Owner writes a message so there's something to read.
+    await call(app, "POST", "/xrpc/test.spaces.space.putRecord", ALICE, {
+      spaceUri, collection: "app.event.message", record: { text: "hello world" },
+    });
+
+    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+      spaceUri, kind: "read",
+    });
+    const { token, invite } = (await create.json()) as any;
+    expect(invite.kind).toBe("read");
+
+    // Anonymous request (no X-Test-Did header) reads via ?inviteToken=
+    const url = `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message&inviteToken=${token}`;
+    const anon = await app.fetch(new Request(`http://localhost${url}`));
+    expect(anon.status).toBe(200);
+    const body = (await anon.json()) as any;
+    expect(body.records.length).toBeGreaterThan(0);
+
+    // Read token cannot be redeemed for membership.
+    const redeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    expect(redeem.status).toBe(400);
+  });
+
+  it("read-join token grants anonymous read AND can be redeemed for membership", async () => {
+    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+      spaceUri, kind: "read-join", perms: "write",
+    });
+    const { token, invite } = (await create.json()) as any;
+    expect(invite.kind).toBe("read-join");
+
+    // Anonymous read works.
+    const url = `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message&inviteToken=${token}`;
+    const anon = await app.fetch(new Request(`http://localhost${url}`));
+    expect(anon.status).toBe(200);
+
+    // Same token can also be redeemed by a signed-in user.
+    const redeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    expect(redeem.status).toBe(200);
+  });
+
+  it("revoked read-token rejects anonymous read", async () => {
+    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+      spaceUri, kind: "read",
+    });
+    const { token, invite } = (await create.json()) as any;
+    await call(app, "POST", "/xrpc/test.spaces.space.invite.revoke", ALICE, {
+      spaceUri, tokenHash: invite.tokenHash,
+    });
+    const url = `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message&inviteToken=${token}`;
+    const res = await app.fetch(new Request(`http://localhost${url}`));
+    expect(res.status).toBe(403);
+  });
+
+  it("read-token does not grant write", async () => {
+    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+      spaceUri, kind: "read",
+    });
+    const { token } = (await create.json()) as any;
+    // Anonymous put with the token in the query — write routes don't honor read-tokens.
+    const url = `/xrpc/test.spaces.space.putRecord?inviteToken=${token}`;
+    const res = await app.fetch(
+      new Request(`http://localhost${url}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spaceUri, collection: "app.event.message", record: { text: "nope" } }),
+      })
+    );
+    expect(res.status).toBe(401);
+  });
 });

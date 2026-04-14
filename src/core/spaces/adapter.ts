@@ -12,6 +12,7 @@ import type {
   AppPolicy,
   CollectionCount,
   CreateInviteInput,
+  InviteKind,
   InviteRow,
   ListOptions,
   ListResult,
@@ -68,6 +69,7 @@ function mapInviteRow(row: any): InviteRow {
   return {
     tokenHash: row.token_hash,
     spaceUri: row.space_uri,
+    kind: (row.kind ?? "join") as InviteKind,
     perms: row.perms,
     expiresAt: row.expires_at == null ? null : toNum(row.expires_at),
     maxUses: row.max_uses == null ? null : Number(row.max_uses),
@@ -238,12 +240,13 @@ export class HostedAdapter implements StorageAdapter {
     const now = Date.now();
     await this.db
       .prepare(
-        `INSERT INTO spaces_invites (token_hash, space_uri, perms, expires_at, max_uses, used_count, created_by, created_at, note)
-         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`
+        `INSERT INTO spaces_invites (token_hash, space_uri, kind, perms, expires_at, max_uses, used_count, created_by, created_at, note)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
       )
       .bind(
         input.tokenHash,
         input.spaceUri,
+        input.kind,
         input.perms,
         input.expiresAt,
         input.maxUses,
@@ -255,6 +258,7 @@ export class HostedAdapter implements StorageAdapter {
     return {
       tokenHash: input.tokenHash,
       spaceUri: input.spaceUri,
+      kind: input.kind,
       perms: input.perms,
       expiresAt: input.expiresAt,
       maxUses: input.maxUses,
@@ -264,6 +268,14 @@ export class HostedAdapter implements StorageAdapter {
       revokedAt: null,
       note: input.note,
     };
+  }
+
+  async getInvite(tokenHash: string): Promise<InviteRow | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM spaces_invites WHERE token_hash = ?`)
+      .bind(tokenHash)
+      .first<any>();
+    return row ? mapInviteRow(row) : null;
   }
 
   async listInvites(
@@ -287,12 +299,14 @@ export class HostedAdapter implements StorageAdapter {
   }
 
   async redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null> {
-    // Atomic: increment used_count only if the invite is usable right now.
+    // Atomic: increment used_count only if the invite is usable right now AND
+    // its kind allows redemption (read-only tokens cannot be consumed for membership).
     const res = await this.db
       .prepare(
         `UPDATE spaces_invites
          SET used_count = used_count + 1
          WHERE token_hash = ?
+           AND kind IN ('join', 'read-join')
            AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
            AND (max_uses IS NULL OR used_count < max_uses)`

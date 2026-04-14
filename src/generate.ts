@@ -547,12 +547,16 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
             spaceUri: {
               type: "string",
               format: "at-uri",
-              description: "If set, query records inside this permissioned space (requires service-auth JWT).",
+              description: "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token).",
             },
             byUser: {
               type: "string",
               format: "did",
               description: "Only used with spaceUri — filter to records authored by this DID.",
+            },
+            inviteToken: {
+              type: "string",
+              description: "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied.",
             },
           }
         : {}),
@@ -643,7 +647,11 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
             spaceUri: {
               type: "string",
               format: "at-uri",
-              description: "If set, fetch from this permissioned space (requires service-auth JWT).",
+              description: "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token).",
+            },
+            inviteToken: {
+              type: "string",
+              description: "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied.",
             },
           }
         : {}),
