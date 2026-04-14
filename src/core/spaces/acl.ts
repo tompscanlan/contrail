@@ -1,16 +1,9 @@
-import type {
-  AppPolicy,
-  CollectionPolicy,
-  SpaceMemberRow,
-  SpaceRow,
-  SpacesConfig,
-} from "./types";
+import type { AppPolicy, MemberPerm, SpaceMemberRow, SpaceRow } from "./types";
 
 export type AclOp = "read" | "write" | "delete";
 
 export interface AclInput {
   op: AclOp;
-  collection: string;
   space: SpaceRow;
   callerDid: string;
   /** Membership row for the caller (or null). Owner does not require a row. */
@@ -19,35 +12,18 @@ export interface AclInput {
   clientId?: string;
   /** For per-record ops (get/delete), the record's author DID. */
   targetAuthorDid?: string;
-  /** The service's configured defaults, used when the space has no override. */
-  config: Pick<SpacesConfig, "defaultPolicies" | "defaultPolicy">;
 }
 
 export type AclResult =
-  | { allow: true; policy: CollectionPolicy }
-  | { allow: false; reason: AclDenyReason; policy?: CollectionPolicy };
+  | { allow: true }
+  | { allow: false; reason: AclDenyReason };
 
 export type AclDenyReason =
-  | "no-policy"
   | "not-member"
-  | "not-owner"
+  | "not-writer"
   | "not-own-record"
   | "app-not-allowed"
   | "unknown-op";
-
-/** Resolve the effective policy for a given collection in a given space. */
-export function resolveCollectionPolicy(
-  space: SpaceRow,
-  collection: string,
-  config: Pick<SpacesConfig, "defaultPolicies" | "defaultPolicy">
-): CollectionPolicy | null {
-  return (
-    space.policy?.[collection] ??
-    config.defaultPolicies?.[collection] ??
-    config.defaultPolicy ??
-    null
-  );
-}
 
 /** Check whether the caller's app is permitted to act in this space. */
 export function checkAppPolicy(
@@ -61,61 +37,44 @@ export function checkAppPolicy(
 }
 
 const isOwner = (space: SpaceRow, did: string) => space.ownerDid === did;
-const isMember = (space: SpaceRow, member: SpaceMemberRow | null, did: string) =>
+const hasMember = (space: SpaceRow, member: SpaceMemberRow | null, did: string) =>
   isOwner(space, did) || member != null;
+const hasWrite = (space: SpaceRow, member: SpaceMemberRow | null, did: string) =>
+  isOwner(space, did) || member?.perms === "write";
 
+/** Space-level access check.
+ *  Model matches the proposal: member list is a (DID, perm) tuple set per space;
+ *  write implies read; owner is always implicit write. No per-collection
+ *  policies — all records in a space share the same access rule. */
 export function checkAccess(input: AclInput): AclResult {
-  const policy = resolveCollectionPolicy(input.space, input.collection, input.config);
-  if (!policy) return { allow: false, reason: "no-policy" };
-
   if (!checkAppPolicy(input.space.appPolicy, input.clientId)) {
-    return { allow: false, reason: "app-not-allowed", policy };
+    return { allow: false, reason: "app-not-allowed" };
   }
 
   if (input.op === "read") {
-    switch (policy.read) {
-      case "owner":
-        return isOwner(input.space, input.callerDid)
-          ? { allow: true, policy }
-          : { allow: false, reason: "not-owner", policy };
-      case "member":
-        return isMember(input.space, input.member, input.callerDid)
-          ? { allow: true, policy }
-          : { allow: false, reason: "not-member", policy };
-      case "member-own":
-        if (!isMember(input.space, input.member, input.callerDid)) {
-          return { allow: false, reason: "not-member", policy };
-        }
-        if (input.targetAuthorDid && input.targetAuthorDid !== input.callerDid) {
-          return { allow: false, reason: "not-own-record", policy };
-        }
-        return { allow: true, policy };
-    }
+    return hasMember(input.space, input.member, input.callerDid)
+      ? { allow: true }
+      : { allow: false, reason: "not-member" };
   }
 
   if (input.op === "write") {
-    switch (policy.write) {
-      case "owner":
-        return isOwner(input.space, input.callerDid)
-          ? { allow: true, policy }
-          : { allow: false, reason: "not-owner", policy };
-      case "member":
-        return isMember(input.space, input.member, input.callerDid)
-          ? { allow: true, policy }
-          : { allow: false, reason: "not-member", policy };
-    }
+    return hasWrite(input.space, input.member, input.callerDid)
+      ? { allow: true }
+      : { allow: false, reason: "not-writer" };
   }
 
   if (input.op === "delete") {
-    if (isOwner(input.space, input.callerDid)) return { allow: true, policy };
-    if (!isMember(input.space, input.member, input.callerDid)) {
-      return { allow: false, reason: "not-member", policy };
+    if (isOwner(input.space, input.callerDid)) return { allow: true };
+    if (!hasWrite(input.space, input.member, input.callerDid)) {
+      return { allow: false, reason: "not-writer" };
     }
     if (input.targetAuthorDid && input.targetAuthorDid !== input.callerDid) {
-      return { allow: false, reason: "not-own-record", policy };
+      return { allow: false, reason: "not-own-record" };
     }
-    return { allow: true, policy };
+    return { allow: true };
   }
 
   return { allow: false, reason: "unknown-op" };
 }
+
+export type MemberPermExport = MemberPerm;

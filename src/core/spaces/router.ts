@@ -1,15 +1,13 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import type { ContrailConfig, Database } from "../types";
 import { HostedAdapter } from "./adapter";
-import { checkAccess, resolveCollectionPolicy } from "./acl";
+import { checkAccess } from "./acl";
 import type { ServiceAuth } from "./auth";
-import { createServiceAuthMiddleware } from "./auth";
+import { buildVerifier, createServiceAuthMiddleware } from "./auth";
 import { nextTid } from "./tid";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
-import type { CollectionPolicy, InviteRow, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
+import type { InviteRow, MemberPerm, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
 import type { Did } from "@atcute/lexicons";
-
-const SPACE = "tools.atmo.space";
 
 export interface SpacesRoutesOptions {
   /** Provide a custom middleware (e.g. for tests). If omitted and spaces.resolver is set, a real one is built. */
@@ -22,16 +20,58 @@ export function registerSpacesRoutes(
   app: Hono,
   db: Database,
   config: ContrailConfig,
-  options: SpacesRoutesOptions = {}
+  options: SpacesRoutesOptions = {},
+  ctx?: { adapter: StorageAdapter; verifier: import("@atcute/xrpc-server/auth").ServiceJwtVerifier } | null
 ): void {
   const spacesConfig = config.spaces;
   if (!spacesConfig) return;
 
-  const adapter = options.adapter ?? new HostedAdapter(db);
-  const auth = options.authMiddleware ?? buildAuthMiddleware(spacesConfig);
-  if (!auth) return; // no resolver configured — spaces are effectively disabled
+  const adapter = options.adapter ?? ctx?.adapter ?? new HostedAdapter(db, config);
+  const auth =
+    options.authMiddleware ??
+    (ctx ? createServiceAuthMiddleware(ctx.verifier) : buildAuthMiddleware(spacesConfig));
+
+  /** Space endpoints are emitted per-deployment under the configured namespace;
+   *  the deployment owns and publishes its own lexicons. The library ships
+   *  templates at `lexicons/tools/atmo/space/*` that the generator instantiates
+   *  under `<ns>.space.*`. */
+  const SPACE = `${config.namespace}.space`;
 
   // Read endpoints
+  app.get(`/xrpc/${SPACE}.listSpaces`, auth, async (c) => {
+    const sa = getAuth(c);
+    const scope = c.req.query("scope") ?? "member"; // "member" | "owner"
+    const type = c.req.query("type") ?? undefined;
+    const cursor = c.req.query("cursor") ?? undefined;
+    const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
+
+    const opts: Parameters<typeof adapter.listSpaces>[0] = { type, cursor, limit };
+    if (scope === "owner") opts.ownerDid = sa.issuer;
+    else opts.memberDid = sa.issuer;
+
+    const result = await adapter.listSpaces(opts);
+    return c.json({
+      spaces: result.spaces.map((s) => publicSpaceView(s, s.ownerDid === sa.issuer)),
+      cursor: result.cursor,
+    });
+  });
+
+  app.get(`/xrpc/${SPACE}.listMembers`, auth, async (c) => {
+    const sa = getAuth(c);
+    const spaceUri = c.req.query("spaceUri");
+    if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    const space = await adapter.getSpace(spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+
+    const isOwner = space.ownerDid === sa.issuer;
+    const member = isOwner ? null : await adapter.getMember(spaceUri, sa.issuer);
+    if (!isOwner && !member) {
+      return c.json({ error: "Forbidden", reason: "not-member" }, 403);
+    }
+    const members = await adapter.listMembers(spaceUri);
+    return c.json({ members });
+  });
+
   app.get(`/xrpc/${SPACE}.getSpace`, auth, async (c) => {
     const uri = c.req.query("uri");
     if (!uri) return c.json({ error: "InvalidRequest", message: "uri required" }, 400);
@@ -60,24 +100,17 @@ export function registerSpacesRoutes(
     const member = await adapter.getMember(spaceUri, sa.issuer);
     const result = checkAccess({
       op: "read",
-      collection,
       space,
       callerDid: sa.issuer,
       member,
       clientId: sa.clientId,
-      config: spacesConfig,
     });
     if (!result.allow) {
       return c.json({ error: "Forbidden", reason: result.reason }, 403);
     }
 
-    // member-own: force caller-only filter
-    const byUserParam = c.req.query("byUser") ?? undefined;
-    const byUser =
-      result.policy.read === "member-own" ? sa.issuer : byUserParam;
-
     const list = await adapter.listRecords(spaceUri, collection, {
-      byUser,
+      byUser: c.req.query("byUser") ?? undefined,
       cursor: c.req.query("cursor") ?? undefined,
       limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
     });
@@ -99,13 +132,11 @@ export function registerSpacesRoutes(
     const member = await adapter.getMember(spaceUri, sa.issuer);
     const result = checkAccess({
       op: "read",
-      collection,
       space,
       callerDid: sa.issuer,
       member,
       clientId: sa.clientId,
       targetAuthorDid: author,
-      config: spacesConfig,
     });
     if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
 
@@ -129,12 +160,10 @@ export function registerSpacesRoutes(
     const member = await adapter.getMember(body.spaceUri, sa.issuer);
     const result = checkAccess({
       op: "write",
-      collection: body.collection,
       space,
       callerDid: sa.issuer,
       member,
       clientId: sa.clientId,
-      config: spacesConfig,
     });
     if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
 
@@ -152,13 +181,38 @@ export function registerSpacesRoutes(
     return c.json({ rkey, authorDid: sa.issuer, createdAt: now });
   });
 
+  app.post(`/xrpc/${SPACE}.deleteRecord`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; collection?: string; rkey?: string }
+      | null;
+    if (!body?.spaceUri || !body.collection || !body.rkey) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri, collection, rkey required" }, 400);
+    }
+    const space = await adapter.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+
+    const member = await adapter.getMember(body.spaceUri, sa.issuer);
+    const result = checkAccess({
+      op: "delete",
+      space,
+      callerDid: sa.issuer,
+      member,
+      clientId: sa.clientId,
+      targetAuthorDid: sa.issuer,
+    });
+    if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+
+    await adapter.deleteRecord(body.spaceUri, body.collection, sa.issuer, body.rkey);
+    return c.json({ ok: true });
+  });
+
   // Admin endpoints
   app.post(`/xrpc/${SPACE}.admin.createSpace`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => ({}))) as {
       type?: string;
       key?: string;
-      policy?: Record<string, CollectionPolicy>;
       appPolicy?: SpaceRow["appPolicy"];
       memberListRef?: string;
       appPolicyRef?: string;
@@ -179,10 +233,10 @@ export function registerSpacesRoutes(
       serviceDid: spacesConfig.serviceDid,
       memberListRef: body.memberListRef ?? null,
       appPolicyRef: body.appPolicyRef ?? null,
-      policy: body.policy ?? null,
       appPolicy: body.appPolicy ?? spacesConfig.defaultAppPolicy ?? null,
     });
-    await adapter.addMember(uri, sa.issuer, "owner", sa.issuer);
+    // Owner is implicit; we still write a row so membership queries are uniform.
+    await adapter.addMember(uri, sa.issuer, "write", sa.issuer);
 
     return c.json({ space: publicSpaceView(space, true) });
   });
@@ -191,7 +245,7 @@ export function registerSpacesRoutes(
   app.post(`/xrpc/${SPACE}.invite.create`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; perms?: string; expiresAt?: number; maxUses?: number; note?: string }
+      | { spaceUri?: string; perms?: MemberPerm; expiresAt?: number; maxUses?: number; note?: string }
       | null;
     if (!body?.spaceUri) {
       return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
@@ -207,7 +261,7 @@ export function registerSpacesRoutes(
     const invite = await adapter.createInvite({
       spaceUri: body.spaceUri,
       tokenHash,
-      perms: body.perms ?? "member",
+      perms: body.perms ?? "write",
       expiresAt: body.expiresAt ?? null,
       maxUses: body.maxUses ?? null,
       createdBy: sa.issuer,
@@ -265,7 +319,7 @@ export function registerSpacesRoutes(
   app.post(`/xrpc/${SPACE}.admin.addMember`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; did?: string; perms?: string }
+      | { spaceUri?: string; did?: string; perms?: MemberPerm }
       | null;
     if (!body?.spaceUri || !body.did) {
       return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
@@ -275,17 +329,34 @@ export function registerSpacesRoutes(
     if (space.ownerDid !== sa.issuer) {
       return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
     }
-    await adapter.addMember(body.spaceUri, body.did, body.perms ?? "member", sa.issuer);
+    await adapter.addMember(body.spaceUri, body.did, body.perms ?? "write", sa.issuer);
+    return c.json({ ok: true });
+  });
+
+  app.post(`/xrpc/${SPACE}.admin.removeMember`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; did?: string }
+      | null;
+    if (!body?.spaceUri || !body.did) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
+    }
+    const space = await adapter.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+    if (body.did === space.ownerDid) {
+      return c.json({ error: "InvalidRequest", reason: "cannot-remove-owner" }, 400);
+    }
+    await adapter.removeMember(body.spaceUri, body.did);
     return c.json({ ok: true });
   });
 }
 
-function buildAuthMiddleware(spaces: SpacesConfig): MiddlewareHandler | null {
-  if (!spaces.resolver) return null;
-  return createServiceAuthMiddleware({
-    serviceDid: spaces.serviceDid as Did,
-    resolver: spaces.resolver,
-  });
+function buildAuthMiddleware(spaces: SpacesConfig): MiddlewareHandler {
+  const verifier = buildVerifier(spaces);
+  return createServiceAuthMiddleware(verifier);
 }
 
 function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {
@@ -319,8 +390,7 @@ function publicSpaceView(space: SpaceRow, forOwner: boolean) {
     memberListRef: space.memberListRef,
     appPolicyRef: space.appPolicyRef,
     createdAt: space.createdAt,
-    ...(forOwner ? { policy: space.policy, appPolicy: space.appPolicy } : {}),
+    ...(forOwner ? { appPolicy: space.appPolicy } : {}),
   };
 }
 
-export { resolveCollectionPolicy };

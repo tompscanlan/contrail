@@ -3,7 +3,7 @@ import { isDid, isNsid } from "@atcute/lexicons/syntax";
 
 import type { Client } from "@atcute/client";
 import type { ContrailConfig, Database, IngestEvent } from "./types";
-import { getDiscoverableCollections, getDependentCollections, DEFAULT_RELAYS } from "./types";
+import { getDiscoverableNsids, getDependentNsids, DEFAULT_RELAYS } from "./types";
 import { applyEvents } from "./db";
 import { getClient, getPDS } from "./client";
 
@@ -462,7 +462,7 @@ export async function discoverDIDs(
   config: ContrailConfig,
   deadline: number
 ): Promise<string[]> {
-  const collections = getDiscoverableCollections(config);
+  const collections = getDiscoverableNsids(config);
   const relays = config.relays ?? DEFAULT_RELAYS;
   if (relays.length === 0 || collections.length === 0) return [];
 
@@ -498,7 +498,7 @@ export async function discoverDIDs(
     await insertDiscoveredDIDs(db, dids, collection);
     discovered.push(...dids);
 
-    for (const depCollection of getDependentCollections(config)) {
+    for (const depCollection of getDependentNsids(config)) {
       await insertDiscoveredDIDs(db, dids, depCollection);
     }
 

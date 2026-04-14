@@ -1,7 +1,32 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
-import type { DidDocumentResolver } from "@atcute/identity-resolver";
+import {
+  CompositeDidDocumentResolver,
+  PlcDidDocumentResolver,
+  WebDidDocumentResolver,
+  type DidDocumentResolver,
+} from "@atcute/identity-resolver";
 import type { Did, Nsid } from "@atcute/lexicons";
+import type { SpacesConfig } from "./types";
+
+export { ServiceJwtVerifier };
+
+/** Build a ServiceJwtVerifier from a SpacesConfig, using the configured
+ *  resolver or a default PLC+Web composite. */
+export function buildVerifier(spaces: SpacesConfig): ServiceJwtVerifier {
+  const resolver =
+    spaces.resolver ??
+    new CompositeDidDocumentResolver({
+      methods: {
+        plc: new PlcDidDocumentResolver(),
+        web: new WebDidDocumentResolver(),
+      },
+    });
+  return new ServiceJwtVerifier({
+    serviceDid: spaces.serviceDid as Did,
+    resolver,
+  });
+}
 
 export interface ServiceAuth {
   issuer: string;
@@ -20,13 +45,8 @@ export interface ServiceAuthOptions {
  *  service-auth token. On success, attaches the decoded claims to c.var.serviceAuth.
  *  Expected Nsid method is taken from the route pattern (last segment after /xrpc/). */
 export function createServiceAuthMiddleware(
-  options: ServiceAuthOptions
+  verifier: ServiceJwtVerifier
 ): MiddlewareHandler {
-  const verifier = new ServiceJwtVerifier({
-    serviceDid: options.serviceDid,
-    resolver: options.resolver,
-  });
-
   return async (c, next) => {
     const header = c.req.header("Authorization");
     if (!header || !header.startsWith("Bearer ")) {
@@ -61,4 +81,24 @@ export function requireServiceAuth(c: Context): ServiceAuth {
   const auth = c.get("serviceAuth") as ServiceAuth | undefined;
   if (!auth) throw new Error("service auth missing; middleware not attached");
   return auth;
+}
+
+/** Verify a request's Authorization: Bearer token out-of-band (e.g. from a
+ *  route handler that doesn't always require auth). Returns the claims on
+ *  success, or null if missing/invalid. */
+export async function verifyServiceAuthRequest(
+  verifier: ServiceJwtVerifier,
+  request: Request,
+  lxm?: Nsid | null
+): Promise<ServiceAuth | null> {
+  const header = request.headers.get("Authorization");
+  if (!header || !header.startsWith("Bearer ")) return null;
+  const token = header.slice(7).trim();
+  const result = await verifier.verify(token, { lxm: lxm ?? null });
+  if (!result.ok) return null;
+  return {
+    issuer: result.value.issuer,
+    audience: result.value.audience,
+    lxm: result.value.lxm,
+  };
 }

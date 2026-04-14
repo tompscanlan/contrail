@@ -1,13 +1,22 @@
-import type { Database } from "../types";
+import type { ContrailConfig, Database, RelationConfig, ResolvedContrailConfig } from "../types";
+import {
+  shortNameForNsid,
+  spacesRecordsTableName,
+  countColumnName,
+  groupedCountColumnName,
+  getRelationField,
+  getNestedValue,
+} from "../types";
+import { getDialect } from "../dialect";
 import type {
   AppPolicy,
   CollectionCount,
-  CollectionPolicy,
   CreateInviteInput,
   InviteRow,
   ListOptions,
   ListResult,
   ListSpacesOptions,
+  MemberPerm,
   SpaceMemberRow,
   SpaceRow,
   StorageAdapter,
@@ -39,7 +48,6 @@ function mapSpaceRow(row: any): SpaceRow {
     serviceDid: row.service_did,
     memberListRef: row.member_list_ref ?? null,
     appPolicyRef: row.app_policy_ref ?? null,
-    policy: parseJson<Record<string, CollectionPolicy>>(row.policy),
     appPolicy: parseJson<AppPolicy>(row.app_policy),
     createdAt: toNum(row.created_at),
     deletedAt: row.deleted_at == null ? null : toNum(row.deleted_at),
@@ -50,7 +58,7 @@ function mapMemberRow(row: any): SpaceMemberRow {
   return {
     spaceUri: row.space_uri,
     did: row.did,
-    perms: row.perms,
+    perms: row.perms as MemberPerm,
     addedAt: toNum(row.added_at),
     addedBy: row.added_by ?? null,
   };
@@ -71,27 +79,49 @@ function mapInviteRow(row: any): InviteRow {
   };
 }
 
-function mapRecordRow(row: any): StoredRecord {
+/** Row mapper for per-collection spaces_records_<short> tables.
+ *  `collection` is injected by the caller (known from the table name). */
+function mapRecordRow(row: any, collection: string): StoredRecord {
   return {
     spaceUri: row.space_uri,
-    collection: row.collection,
-    authorDid: row.author_did,
+    collection,
+    authorDid: row.did,
     rkey: row.rkey,
     cid: row.cid ?? null,
     record: parseJson<Record<string, unknown>>(row.record) ?? {},
-    createdAt: toNum(row.created_at),
+    createdAt: toNum(row.time_us),
   };
 }
 
 export class HostedAdapter implements StorageAdapter {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly config?: ContrailConfig
+  ) {}
+
+  /** Resolve the per-collection spaces table name, or throw if the collection
+   *  isn't configured (and therefore has no table). */
+  private tableFor(collection: string): string {
+    if (!this.config) {
+      throw new Error(
+        `HostedAdapter: config not provided; cannot resolve table for collection ${collection}`
+      );
+    }
+    const short = shortNameForNsid(this.config, collection);
+    if (!short) {
+      throw new Error(
+        `HostedAdapter: collection ${collection} is not configured in this deployment`
+      );
+    }
+    return spacesRecordsTableName(short);
+  }
 
   async createSpace(space: Omit<SpaceRow, "createdAt" | "deletedAt">): Promise<SpaceRow> {
     const now = Date.now();
     await this.db
       .prepare(
-        `INSERT INTO spaces (uri, owner_did, type, key, service_did, member_list_ref, app_policy_ref, policy, app_policy, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO spaces (uri, owner_did, type, key, service_did, member_list_ref, app_policy_ref, app_policy, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         space.uri,
@@ -101,7 +131,6 @@ export class HostedAdapter implements StorageAdapter {
         space.serviceDid,
         space.memberListRef,
         space.appPolicyRef,
-        space.policy ? JSON.stringify(space.policy) : null,
         space.appPolicy ? JSON.stringify(space.appPolicy) : null,
         now
       )
@@ -164,13 +193,6 @@ export class HostedAdapter implements StorageAdapter {
       .run();
   }
 
-  async updateSpacePolicy(spaceUri: string, policy: Record<string, CollectionPolicy>): Promise<void> {
-    await this.db
-      .prepare(`UPDATE spaces SET policy = ? WHERE uri = ?`)
-      .bind(JSON.stringify(policy), spaceUri)
-      .run();
-  }
-
   async updateSpaceAppPolicy(spaceUri: string, appPolicy: AppPolicy): Promise<void> {
     await this.db
       .prepare(`UPDATE spaces SET app_policy = ? WHERE uri = ?`)
@@ -178,7 +200,7 @@ export class HostedAdapter implements StorageAdapter {
       .run();
   }
 
-  async addMember(spaceUri: string, did: string, perms: string, addedBy: string | null): Promise<void> {
+  async addMember(spaceUri: string, did: string, perms: MemberPerm, addedBy: string | null): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO spaces_members (space_uri, did, perms, added_at, added_by)
@@ -288,23 +310,50 @@ export class HostedAdapter implements StorageAdapter {
   }
 
   async putRecord(record: StoredRecord): Promise<void> {
+    const table = this.tableFor(record.collection);
+    const uri = `at://${record.authorDid}/${record.collection}/${record.rkey}`;
+
+    const childShort = this.config ? shortNameForNsid(this.config, record.collection) : null;
+    const prev = childShort
+      ? await this.db
+          .prepare(`SELECT record FROM ${table} WHERE space_uri = ? AND did = ? AND rkey = ?`)
+          .bind(record.spaceUri, record.authorDid, record.rkey)
+          .first<{ record: unknown } | null>()
+      : null;
+    const beforeRecord = parseJson<Record<string, unknown>>(prev?.record ?? null);
+
     await this.db
       .prepare(
-        `INSERT INTO spaces_records (space_uri, collection, author_did, rkey, cid, record, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (space_uri, collection, author_did, rkey) DO UPDATE SET
-           cid = excluded.cid, record = excluded.record`
+        `INSERT INTO ${table} (space_uri, uri, did, rkey, cid, record, time_us, indexed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (space_uri, did, rkey) DO UPDATE SET
+           uri = excluded.uri,
+           cid = excluded.cid,
+           record = excluded.record,
+           time_us = excluded.time_us,
+           indexed_at = excluded.indexed_at`
       )
       .bind(
         record.spaceUri,
-        record.collection,
+        uri,
         record.authorDid,
         record.rkey,
         record.cid,
         JSON.stringify(record.record),
-        record.createdAt
+        record.createdAt,
+        Date.now()
       )
       .run();
+
+    if (childShort && this.config) {
+      await this.recountParentsForSpace(
+        record.spaceUri,
+        childShort,
+        beforeRecord,
+        record.record,
+        record.authorDid
+      );
+    }
   }
 
   async getRecord(
@@ -313,14 +362,15 @@ export class HostedAdapter implements StorageAdapter {
     authorDid: string,
     rkey: string
   ): Promise<StoredRecord | null> {
+    const table = this.tableFor(collection);
     const row = await this.db
       .prepare(
-        `SELECT * FROM spaces_records
-         WHERE space_uri = ? AND collection = ? AND author_did = ? AND rkey = ?`
+        `SELECT * FROM ${table}
+         WHERE space_uri = ? AND did = ? AND rkey = ?`
       )
-      .bind(spaceUri, collection, authorDid, rkey)
+      .bind(spaceUri, authorDid, rkey)
       .first<any>();
-    return row ? mapRecordRow(row) : null;
+    return row ? mapRecordRow(row, collection) : null;
   }
 
   async listRecords(
@@ -328,27 +378,28 @@ export class HostedAdapter implements StorageAdapter {
     collection: string,
     options: ListOptions = {}
   ): Promise<ListResult> {
+    const table = this.tableFor(collection);
     const limit = Math.min(options.limit ?? 50, 200);
-    const clauses: string[] = ["space_uri = ?", "collection = ?"];
-    const params: any[] = [spaceUri, collection];
+    const clauses: string[] = ["space_uri = ?"];
+    const params: any[] = [spaceUri];
 
     if (options.byUser) {
-      clauses.push("author_did = ?");
+      clauses.push("did = ?");
       params.push(options.byUser);
     }
     if (options.cursor) {
-      clauses.push("created_at < ?");
+      clauses.push("time_us < ?");
       params.push(Number(options.cursor));
     }
 
-    const sql = `SELECT * FROM spaces_records
+    const sql = `SELECT * FROM ${table}
       WHERE ${clauses.join(" AND ")}
-      ORDER BY created_at DESC
+      ORDER BY time_us DESC
       LIMIT ?`;
     params.push(limit + 1);
 
     const { results } = await this.db.prepare(sql).bind(...params).all<any>();
-    const records = results.map(mapRecordRow);
+    const records = results.map((r) => mapRecordRow(r, collection));
     let cursor: string | undefined;
     if (records.length > limit) {
       const next = records.pop()!;
@@ -363,30 +414,152 @@ export class HostedAdapter implements StorageAdapter {
     authorDid: string,
     rkey: string
   ): Promise<void> {
+    const table = this.tableFor(collection);
+
+    const childShort = this.config ? shortNameForNsid(this.config, collection) : null;
+    const prev = childShort
+      ? await this.db
+          .prepare(`SELECT record FROM ${table} WHERE space_uri = ? AND did = ? AND rkey = ?`)
+          .bind(spaceUri, authorDid, rkey)
+          .first<{ record: unknown } | null>()
+      : null;
+    const beforeRecord = parseJson<Record<string, unknown>>(prev?.record ?? null);
+
     await this.db
       .prepare(
-        `DELETE FROM spaces_records
-         WHERE space_uri = ? AND collection = ? AND author_did = ? AND rkey = ?`
+        `DELETE FROM ${table}
+         WHERE space_uri = ? AND did = ? AND rkey = ?`
       )
-      .bind(spaceUri, collection, authorDid, rkey)
+      .bind(spaceUri, authorDid, rkey)
       .run();
+
+    if (childShort && this.config) {
+      await this.recountParentsForSpace(spaceUri, childShort, beforeRecord, null, authorDid);
+    }
+  }
+
+  /** Recompute count columns on parent records in the same space, scoped to the
+   *  targets derived from before/after versions of the written/deleted child record. */
+  private async recountParentsForSpace(
+    spaceUri: string,
+    childShort: string,
+    before: Record<string, unknown> | null,
+    after: Record<string, unknown> | null,
+    childDid: string
+  ): Promise<void> {
+    if (!this.config) return;
+    const config = this.config;
+    const resolved = (config as ResolvedContrailConfig)._resolved;
+    const childTable = spacesRecordsTableName(childShort);
+
+    type Inbound = { parentShort: string; relationName: string; rel: RelationConfig };
+    const inbound: Inbound[] = [];
+    for (const [parentShort, parentCfg] of Object.entries(config.collections)) {
+      if (parentCfg.allowInSpaces === false) continue;
+      for (const [relName, rel] of Object.entries(parentCfg.relations ?? {})) {
+        if (rel.count === false) continue;
+        if (rel.collection !== childShort) continue;
+        inbound.push({ parentShort, relationName: relName, rel });
+      }
+    }
+    if (inbound.length === 0) return;
+
+    // Deduplicate (parent, relation, target) across before/after.
+    const keyed = new Map<string, { parentShort: string; relationName: string; rel: RelationConfig; target: string }>();
+    for (const { parentShort, relationName, rel } of inbound) {
+      const field = getRelationField(rel);
+      const collectTarget = (rec: Record<string, unknown> | null) => {
+        if (!rec) return;
+        if (rel.match === "did") {
+          keyed.set(`${parentShort}:${relationName}:${childDid}`, {
+            parentShort, relationName, rel, target: childDid,
+          });
+          return;
+        }
+        const v = getNestedValue(rec, field);
+        if (typeof v === "string" && v.length > 0) {
+          keyed.set(`${parentShort}:${relationName}:${v}`, {
+            parentShort, relationName, rel, target: v,
+          });
+        }
+      };
+      collectTarget(before);
+      collectTarget(after);
+    }
+    if (keyed.size === 0) return;
+
+    const dialect = getDialect(this.db);
+    const stmts: ReturnType<Database["prepare"]>[] = [];
+
+    for (const { parentShort, relationName, rel, target } of keyed.values()) {
+      const parentTable = spacesRecordsTableName(parentShort);
+      const matchColumn = rel.match === "did" ? "did" : "uri";
+      const field = getRelationField(rel);
+      const countExpr = rel.countDistinct
+        ? `COUNT(DISTINCT ${rel.countDistinct})`
+        : "COUNT(*)";
+
+      const setClauses: string[] = [];
+      const binds: (string | number)[] = [];
+
+      const totalCol = countColumnName(rel.collection);
+      setClauses.push(
+        `${totalCol} = (SELECT ${countExpr} FROM ${childTable} WHERE space_uri = ? AND ${dialect.jsonExtract("record", field)} = ?)`
+      );
+      binds.push(spaceUri, target);
+
+      if (rel.groupBy) {
+        const mapping = resolved?.relations[parentShort]?.[relationName];
+        if (mapping?.groups) {
+          for (const [groupKey, fullToken] of Object.entries(mapping.groups)) {
+            const groupCol = groupedCountColumnName(rel.collection, groupKey);
+            setClauses.push(
+              `${groupCol} = (SELECT ${countExpr} FROM ${childTable} WHERE space_uri = ? AND ${dialect.jsonExtract("record", field)} = ? AND ${dialect.jsonExtract("record", rel.groupBy)} = ?)`
+            );
+            binds.push(spaceUri, target, fullToken);
+          }
+        }
+      }
+
+      binds.push(spaceUri, target);
+      stmts.push(
+        this.db
+          .prepare(
+            `UPDATE ${parentTable} SET ${setClauses.join(", ")} WHERE space_uri = ? AND ${matchColumn} = ?`
+          )
+          .bind(...binds)
+      );
+    }
+
+    if (stmts.length > 0) await this.db.batch(stmts);
   }
 
   async listCollections(
     spaceUri: string,
     options: { byUser?: string } = {}
   ): Promise<CollectionCount[]> {
-    const clauses: string[] = ["space_uri = ?"];
-    const params: any[] = [spaceUri];
-    if (options.byUser) {
-      clauses.push("author_did = ?");
-      params.push(options.byUser);
+    if (!this.config) return [];
+    const results: CollectionCount[] = [];
+    for (const [short, colConfig] of Object.entries(this.config.collections)) {
+      if (colConfig.allowInSpaces === false) continue;
+      const table = spacesRecordsTableName(short);
+      const clauses: string[] = ["space_uri = ?"];
+      const params: any[] = [spaceUri];
+      if (options.byUser) {
+        clauses.push("did = ?");
+        params.push(options.byUser);
+      }
+      try {
+        const row = await this.db
+          .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${clauses.join(" AND ")}`)
+          .bind(...params)
+          .first<{ count: number }>();
+        const count = Number(row?.count ?? 0);
+        if (count > 0) results.push({ collection: colConfig.collection, count });
+      } catch {
+        // table doesn't exist (collection added after init, or allowInSpaces toggled) — skip
+      }
     }
-    const sql = `SELECT collection, COUNT(*) AS count
-      FROM spaces_records
-      WHERE ${clauses.join(" AND ")}
-      GROUP BY collection`;
-    const { results } = await this.db.prepare(sql).bind(...params).all<any>();
-    return results.map((r) => ({ collection: r.collection, count: Number(r.count) }));
+    return results;
   }
 }

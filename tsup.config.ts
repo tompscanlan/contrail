@@ -5,7 +5,7 @@ export default defineConfig({
     "src/index.ts",
     "src/server.ts",
     "src/generate.ts",
-    "src/lexicons.ts",
+    "src/publish.ts",
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
   ],

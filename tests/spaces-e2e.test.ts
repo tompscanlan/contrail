@@ -13,15 +13,14 @@ const CHARLIE = "did:plc:charlie";
 
 const CONFIG: ContrailConfig = {
   namespace: "test.spaces",
-  collections: {},
+  collections: {
+    location: { collection: "app.event.location" },
+    message: { collection: "app.event.message" },
+    ticket: { collection: "app.event.ticket" },
+  },
   spaces: {
     type: "tools.atmo.event.space",
     serviceDid: "did:web:test.example#svc",
-    defaultPolicies: {
-      "app.event.location": { read: "member", write: "owner" },
-      "app.event.message":  { read: "member", write: "member" },
-      "app.event.ticket":   { read: "member-own", write: "owner" },
-    },
   },
 };
 
@@ -91,7 +90,7 @@ describe("spaces e2e", () => {
     app = await makeApp();
 
     // Alice creates a space
-    const res = await call(app, "POST", "/xrpc/tools.atmo.space.admin.createSpace", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.admin.createSpace", ALICE, {
       key: "birthday-2026",
     });
     expect(res.status).toBe(200);
@@ -101,7 +100,7 @@ describe("spaces e2e", () => {
   });
 
   it("owner can write a location record", async () => {
-    const res = await call(app, "POST", "/xrpc/tools.atmo.space.putRecord", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.putRecord", ALICE, {
       spaceUri,
       collection: "app.event.location",
       record: { address: "123 Main St" },
@@ -116,7 +115,7 @@ describe("spaces e2e", () => {
     const res = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
+      `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
       BOB
     );
     expect(res.status).toBe(403);
@@ -125,7 +124,7 @@ describe("spaces e2e", () => {
   });
 
   it("non-member cannot write a message", async () => {
-    const res = await call(app, "POST", "/xrpc/tools.atmo.space.putRecord", BOB, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.putRecord", BOB, {
       spaceUri,
       collection: "app.event.message",
       record: { text: "spam" },
@@ -134,10 +133,10 @@ describe("spaces e2e", () => {
   });
 
   it("owner adds Bob as member", async () => {
-    const res = await call(app, "POST", "/xrpc/tools.atmo.space.admin.addMember", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.admin.addMember", ALICE, {
       spaceUri,
       did: BOB,
-      perms: "attendee",
+      perms: "write",
     });
     expect(res.status).toBe(200);
   });
@@ -146,7 +145,7 @@ describe("spaces e2e", () => {
     const res = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
+      `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
       BOB
     );
     expect(res.status).toBe(200);
@@ -156,7 +155,7 @@ describe("spaces e2e", () => {
   });
 
   it("Bob can write his own message; Alice and Bob can both read", async () => {
-    const put = await call(app, "POST", "/xrpc/tools.atmo.space.putRecord", BOB, {
+    const put = await call(app, "POST", "/xrpc/test.spaces.space.putRecord", BOB, {
       spaceUri,
       collection: "app.event.message",
       record: { text: "see you there!" },
@@ -166,7 +165,7 @@ describe("spaces e2e", () => {
     const listAsAlice = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message`,
+      `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message`,
       ALICE
     );
     expect(listAsAlice.status).toBe(200);
@@ -186,11 +185,22 @@ describe("spaces e2e", () => {
     expect(true).toBe(true);
   });
 
+  it("per-collection listRecords with ?spaceUri= requires auth", async () => {
+    // Public path (no spaceUri) works without auth; adding spaceUri forces the
+    // service-auth JWT path. With no valid JWT, 401.
+    const res = await app.fetch(
+      new Request(
+        `http://localhost/xrpc/${CONFIG.namespace}.location.listRecords?spaceUri=${encodeURIComponent(spaceUri)}`
+      )
+    );
+    expect([401, 501]).toContain(res.status);
+  });
+
   it("Charlie (not a member) cannot list messages", async () => {
     const res = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message`,
+      `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message`,
       CHARLIE
     );
     expect(res.status).toBe(403);
@@ -212,7 +222,7 @@ describe("spaces e2e", () => {
 
     // End-to-end works: createSpace, putRecord, listRecords
     const create = await splitApp.fetch(
-      new Request("http://localhost/xrpc/tools.atmo.space.admin.createSpace", {
+      new Request("http://localhost/xrpc/test.spaces.space.admin.createSpace", {
         method: "POST",
         headers: { "X-Test-Did": ALICE, "Content-Type": "application/json" },
         body: JSON.stringify({ key: "split-test" }),
@@ -222,7 +232,7 @@ describe("spaces e2e", () => {
     const { space } = await create.json() as any;
 
     const put = await splitApp.fetch(
-      new Request("http://localhost/xrpc/tools.atmo.space.putRecord", {
+      new Request("http://localhost/xrpc/test.spaces.space.putRecord", {
         method: "POST",
         headers: { "X-Test-Did": ALICE, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -235,7 +245,7 @@ describe("spaces e2e", () => {
 
     const list = await splitApp.fetch(
       new Request(
-        `http://localhost/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(space.uri)}&collection=app.event.location`,
+        `http://localhost/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(space.uri)}&collection=app.event.location`,
         { headers: { "X-Test-Did": ALICE } }
       )
     );
@@ -247,7 +257,7 @@ describe("spaces e2e", () => {
     const listRes = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
+      `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location`,
       BOB
     );
     const list = await asJson(listRes);
@@ -256,7 +266,7 @@ describe("spaces e2e", () => {
     const res = await call(
       app,
       "GET",
-      `/xrpc/tools.atmo.space.getRecord?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location&author=${ALICE}&rkey=${rkey}`,
+      `/xrpc/test.spaces.space.getRecord?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.location&author=${ALICE}&rkey=${rkey}`,
       BOB
     );
     expect(res.status).toBe(200);
