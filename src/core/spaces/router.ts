@@ -434,43 +434,12 @@ export function registerSpacesRoutes(
     if (!space) return c.json({ error: "NotFound" }, 404);
     if (space.ownerDid === sa.issuer) {
       return c.json(
-        { error: "InvalidRequest", reason: "owner-cannot-leave", message: "Transfer ownership before leaving" },
+        { error: "InvalidRequest", reason: "owner-cannot-leave", message: "Owner cannot leave; delete the space instead" },
         400
       );
     }
     await adapter.removeMember(body.spaceUri, sa.issuer);
     return c.json({ ok: true });
-  });
-
-  app.post(`/xrpc/${SPACE}.transferOwnership`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; newOwnerDid?: string }
-      | null;
-    if (!body?.spaceUri || !body.newOwnerDid) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri and newOwnerDid required" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-    if (body.newOwnerDid === sa.issuer) {
-      return c.json({ space: publicSpaceView(space, true) });
-    }
-    const target = await adapter.getMember(body.spaceUri, body.newOwnerDid);
-    if (!target || target.perms !== "write") {
-      return c.json(
-        { error: "InvalidRequest", reason: "new-owner-not-write-member" },
-        400
-      );
-    }
-    // Ensure the outgoing owner stays a write member (the implicit-owner row
-    // we insert at createSpace has perms=write already, but bump in case).
-    await adapter.addMember(body.spaceUri, sa.issuer, "write", sa.issuer);
-    const updated = await adapter.transferOwnership(body.spaceUri, body.newOwnerDid);
-    if (!updated) return c.json({ error: "NotFound" }, 404);
-    return c.json({ space: publicSpaceView(updated, false) });
   });
 
   app.get(`/xrpc/${SPACE}.whoami`, auth, async (c) => {

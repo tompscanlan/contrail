@@ -54,8 +54,7 @@ All endpoints are emitted under `<config.namespace>.space.*` from templates in
 - `space.createSpace`
 - `space.addMember`
 - `space.removeMember`
-- `space.leaveSpace` — self-remove; owner must transfer first (extra)
-- `space.transferOwnership` — new owner must already be a write member (extra)
+- `space.leaveSpace` — self-remove; owner cannot leave (extra)
 
 ### Invites (extra; not in the spec)
 - `space.invite.create` — returns raw token once; hash stored
@@ -100,10 +99,9 @@ the real spec lands:
 - Keep the member list as the single ACL. Don't add roles or per-collection
   policies just because it's easy — the spec is emphatic that the member list
   is _the_ ACL.
-- Keep `space.whoami`, `space.leaveSpace`, `space.transferOwnership`, and the
-  invite endpoints clearly labeled as contrail extras in docs. If the spec
-  ends up naming some of them, renaming is cheap; relying on them from the
-  base spec isn't.
+- Keep `space.whoami`, `space.leaveSpace`, and the invite endpoints clearly
+  labeled as contrail extras in docs. If the spec ends up naming some of
+  them, renaming is cheap; relying on them from the base spec isn't.
 - Don't mint a canonical record URI. The spec is undecided on the authority
   (user DID vs space owner DID); storing records by tuple avoids picking.
 

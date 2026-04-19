@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Remove the caller from a space's member list. The owner cannot leave — they must transferOwnership first.",
+      "description": "Remove the caller from a space's member list. The owner cannot leave — they must delete the space instead.",
       "input": {
         "encoding": "application/json",
         "schema": {

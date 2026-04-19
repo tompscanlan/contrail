@@ -35,7 +35,6 @@
             "rsvp.atmo.space.listSpaces",
             "rsvp.atmo.space.putRecord",
             "rsvp.atmo.space.removeMember",
-            "rsvp.atmo.space.transferOwnership",
             "rsvp.atmo.space.whoami"
           ]
         }

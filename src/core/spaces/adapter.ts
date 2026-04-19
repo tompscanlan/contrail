@@ -196,14 +196,6 @@ export class HostedAdapter implements StorageAdapter {
       .run();
   }
 
-  async transferOwnership(spaceUri: string, newOwnerDid: string): Promise<SpaceRow | null> {
-    await this.db
-      .prepare(`UPDATE spaces SET owner_did = ? WHERE uri = ? AND deleted_at IS NULL`)
-      .bind(newOwnerDid, spaceUri)
-      .run();
-    return this.getSpace(spaceUri);
-  }
-
   async updateSpaceAppPolicy(spaceUri: string, appPolicy: AppPolicy): Promise<void> {
     await this.db
       .prepare(`UPDATE spaces SET app_policy = ? WHERE uri = ?`)

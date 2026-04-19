@@ -19,7 +19,6 @@ The e2e + invite tests cover the happy paths. Gaps:
 - App policy enforcement in both `allow` and `deny` modes (clientId checks)
 - `deleteRecord` by owner on another author's record
 - Re-querying a soft-deleted space returns NotFound
-- `transferOwnership` with invalid/non-member/read-only-member targets
 - `leaveSpace` by owner (should error)
 - `whoami` for owner, member, non-member
 
@@ -63,13 +62,20 @@ don't have that yet. Lightweight interim: Server-Sent Events on
 right away; swap to the real thing later.
 
 ## Namespace split for contrail-specific extras
-Right now `space.invite.*`, `space.whoami`, `space.leaveSpace`,
-`space.transferOwnership` all live alongside spec-adjacent endpoints. If the
-spec lands with different names or semantics for some of these, migration
-cost is "rename everywhere." A second namespace
-(`<ns>.spaceExt.*` or `<ns>.contrail.*`) for clearly-off-spec features would
-keep the `space.*` surface close to whatever the spec becomes.
+Right now `space.invite.*`, `space.whoami`, and `space.leaveSpace` all live
+alongside spec-adjacent endpoints. If the spec lands with different names or
+semantics for some of these, migration cost is "rename everywhere." A second
+namespace (`<ns>.spaceExt.*` or `<ns>.contrail.*`) for clearly-off-spec
+features would keep the `space.*` surface close to whatever the spec becomes.
 
 Decision: split them. Pick a namespace name, move at least `invite.*` and
-`whoami`; `leaveSpace` / `transferOwnership` are ambiguous (spec implies
-ownership transfer is a thing, just doesn't name it).
+`whoami`; `leaveSpace` is ambiguous.
+
+## Ownership transfer
+Dropped for now. The space URI is `at://<ownerDid>/<type>/<key>` — owner DID
+is baked into the URI, and every record/member/invite row keys off that URI
+string. Transferring would mean either rewriting every referencing row in a
+transaction (and breaking external refs to the old URI) or decoupling storage
+from URI with an internal stable space id (bigger refactor). Revisit once the
+spec pins down whether ownership transfer exists and what the URI authority
+is supposed to be post-transfer.
