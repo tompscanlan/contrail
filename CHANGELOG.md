@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.1.1
+
+### Patch Changes
+
+- ef42ef2: remove transfer ownership
+
 ## 0.1.0
 
 ### Minor Changes
