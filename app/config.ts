@@ -2,10 +2,11 @@ import type { ContrailConfig } from "../src/index";
 
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
-  spaces: {
-    type: "tools.atmo.event.space",
-    serviceDid: "did:web:rsvp.atmo",
-  },
+  jetstreams: ["wss://jetstream1.us-east.bsky.network"],
+  // spaces: {
+  //   type: "tools.atmo.event.space",
+  //   serviceDid: "did:web:rsvp.atmo",
+  // },
   collections: {
     event: {
       collection: "community.lexicon.calendar.event",

@@ -37,33 +37,63 @@ export async function ingestEvents(
   const dependentCollections = new Set(getDependentNsids(config));
   const urls = config.jetstreams ?? [];
 
+  let totalCommits = 0;
+  let filteredUnknownDid = 0;
+  const filteredDidSamples = new Set<string>();
+  let lastYieldedTimeUs: number | null = null;
+  let firstYieldedTimeUs: number | null = null;
+  let connectCount = 0;
+  const seenUris = new Map<string, number>(); // uri -> time_us of first occurrence
+  const duplicateUris: string[] = [];
+
   const subscription = new JetstreamSubscription({
     url: urls,
     wantedCollections: collections,
     ...(cursor !== null ? { cursor } : {}),
     onConnectionOpen() {
-      log.log("Connected to Jetstream");
+      connectCount++;
+      log.log(
+        `[ingest] connected to Jetstream #${connectCount} (url=${urls.join("|")}, cursor=${cursor ?? "none"}, wanted=${collections.join(",")})`
+      );
     },
     onConnectionClose(event) {
       log.log(
-        `Disconnected from Jetstream: ${event.code} ${event.reason}`
+        `[ingest] disconnected from Jetstream: ${event.code} ${event.reason}`
       );
     },
     onConnectionError(event) {
-      log.error("Jetstream error:", event.error);
+      log.error("[ingest] Jetstream error:", event.error);
     },
   });
 
   for await (const event of subscription) {
+    if (firstYieldedTimeUs === null) firstYieldedTimeUs = event.time_us;
+    lastYieldedTimeUs = event.time_us;
     if (event.kind === "commit") {
       const { commit } = event;
+      totalCommits++;
+
+      const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
       if (dependentCollections.has(commit.collection) && knownDids) {
-        if (!knownDids.has(event.did)) continue;
+        if (!knownDids.has(event.did)) {
+          filteredUnknownDid++;
+          if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
+          continue;
+        }
+      }
+
+      const prev = seenUris.get(uri);
+      if (prev !== undefined) {
+        duplicateUris.push(uri);
+        log.warn(
+          `[ingest] DUPLICATE in cycle: ${uri} first time_us=${prev}, again=${event.time_us}, delta=${event.time_us - prev}us`
+        );
+      } else {
+        seenUris.set(uri, event.time_us);
       }
 
       const now = Date.now();
-      const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
       collected.push({
         uri,
@@ -80,23 +110,68 @@ export async function ingestEvents(
         indexed_at: now * 1000,
       });
 
+      log.log(
+        `[ingest] keep: ${commit.operation} ${uri} time_us=${event.time_us}`
+      );
+
       if (knownDids && !dependentCollections.has(commit.collection)) {
         knownDids.add(event.did);
       }
     }
 
     if (event.time_us >= startTimeUs) {
-      log.log("Caught up to present, stopping ingestion");
+      log.log(
+        `[ingest] caught up to present, stopping (last time_us=${event.time_us}, startTimeUs=${startTimeUs})`
+      );
       break;
     }
 
     if (Date.now() >= deadline) {
-      log.log("Safety timeout reached, stopping ingestion");
+      log.log(
+        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
+      );
       break;
     }
   }
 
+  if (filteredUnknownDid > 0) {
+    const sample = [...filteredDidSamples].join(", ");
+    log.log(
+      `[ingest] ${filteredUnknownDid} events filtered (unknown did). sample dids: ${sample}`
+    );
+  }
   const lastCursor = subscription.cursor || null;
+
+  const cursorGap =
+    lastCursor !== null && lastYieldedTimeUs !== null
+      ? lastCursor - lastYieldedTimeUs
+      : null;
+
+  // Detect the library's internal cursor rollback (picks a different URL → rolls
+  // back 10s → first event comes in BEFORE the cursor we asked it to start from).
+  const rolledBackUs =
+    cursor !== null && firstYieldedTimeUs !== null && firstYieldedTimeUs < cursor
+      ? cursor - firstYieldedTimeUs
+      : 0;
+
+  log.log(
+    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, kept=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
+  );
+
+  if (cursorGap !== null && cursorGap > 1000) {
+    log.warn(
+      `[ingest] CURSOR GAP: subscription cursor is ${cursorGap}us (${Math.floor(
+        cursorGap / 1000
+      )}ms) ahead of last yielded event — buffered events may be dropped`
+    );
+  }
+
+  if (connectCount > 1) {
+    log.warn(
+      `[ingest] RECONNECTED ${connectCount} times during cycle — each reconnect picks a URL at random and rolls cursor back 10s`
+    );
+  }
+
   return { events: collected, lastCursor };
 }
 
@@ -117,9 +192,13 @@ export async function runIngestCycle(
 
   const cursor = await getLastCursor(db);
   const collections = getCollectionNsids(config);
+  const nowUs = Date.now() * 1000;
+  const lagMs = cursor !== null ? Math.floor((nowUs - cursor) / 1000) : null;
 
   log.log(
-    `Starting ingestion. Cursor: ${cursor ?? "none"}, Collections: ${collections.join(", ")}`
+    `[ingest] starting cycle. cursor=${cursor ?? "none"}${
+      lagMs !== null ? ` (lag=${lagMs}ms)` : ""
+    }, timeout=${timeoutMs}ms, collections=${collections.join(", ")}`
   );
 
   // Load known DIDs for filtering dependent collections
@@ -147,7 +226,18 @@ export async function runIngestCycle(
     knownDids
   );
 
-  log.log(`Received ${events.length} events from Jetstream`);
+  if (events.length > 0) {
+    const breakdown: Record<string, number> = {};
+    for (const e of events) {
+      const key = `${e.collection}:${e.operation}`;
+      breakdown[key] = (breakdown[key] ?? 0) + 1;
+    }
+    log.log(
+      `[ingest] received ${events.length} events. breakdown=${JSON.stringify(breakdown)}`
+    );
+  } else {
+    log.log(`[ingest] received 0 events from Jetstream`);
+  }
 
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
@@ -166,7 +256,13 @@ export async function runIngestCycle(
 
   if (lastCursor !== null) {
     await saveCursor(db, lastCursor);
-    log.log(`Saved cursor: ${lastCursor}`);
+    log.log(
+      `[ingest] saved cursor=${lastCursor} (advanced ${
+        cursor !== null ? lastCursor - cursor : "n/a"
+      }us)`
+    );
+  } else {
+    log.log(`[ingest] no cursor returned from subscription; not saving`);
   }
 
   // Prune feed items hourly
@@ -179,5 +275,5 @@ export async function runIngestCycle(
     s.lastFeedPruneMs = Date.now();
   }
 
-  log.log(`Ingestion complete. Stored ${events.length} events.`);
+  log.log(`[ingest] cycle complete. stored=${events.length}`);
 }

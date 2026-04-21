@@ -428,7 +428,12 @@ export async function applyEvents(
     const short = config
       ? shortNameForNsid(config, e.collection) ?? (config.collections[e.collection] ? e.collection : null)
       : e.collection;
-    if (!short) continue; // unknown collection — skip silently
+    if (!short) {
+      (config?.logger ?? console).warn(
+        `[ingest] drop (unknown collection in applyEvents): ${e.operation} ${e.uri} collection=${e.collection}`
+      );
+      continue;
+    }
     const table = recordsTableName(short);
 
     if (e.operation === "delete") {

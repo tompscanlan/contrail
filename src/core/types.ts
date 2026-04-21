@@ -128,9 +128,6 @@ export function deriveShortName(nsid: string): string {
 
 export const DEFAULT_JETSTREAMS = [
   "wss://jetstream1.us-east.bsky.network",
-  "wss://jetstream2.us-east.bsky.network",
-  "wss://jetstream1.us-west.bsky.network",
-  "wss://jetstream2.us-west.bsky.network",
 ];
 
 export const DEFAULT_RELAYS = [
