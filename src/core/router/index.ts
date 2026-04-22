@@ -14,6 +14,12 @@ import type { StorageAdapter } from "../spaces/types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
 import { registerCommunityRoutes } from "../community/router";
 import type { CommunityRoutesOptions } from "../community/router";
+import { CommunityAdapter } from "../community/adapter";
+import { registerRealtimeRoutes } from "../realtime/router";
+import type { RealtimeRoutesOptions } from "../realtime/router";
+import { InMemoryPubSub } from "../realtime/in-memory";
+import { wrapWithPublishing } from "../realtime/publishing-adapter";
+import type { PubSub } from "../realtime/types";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
@@ -26,6 +32,7 @@ export interface SpacesContext {
 export interface CreateAppOptions {
   spaces?: SpacesRoutesOptions;
   community?: CommunityRoutesOptions;
+  realtime?: Partial<RealtimeRoutesOptions>;
   /** Separate DB for the spaces tables. Defaults to `db`. */
   spacesDb?: Database;
   /** Full spaces context override (escape hatch for tests). */
@@ -72,7 +79,7 @@ export function createApp(
   // Shared spaces context — verifier + adapter — reused by both the per-collection
   // routes (for `?spaceUri=...` dispatch) and the `<ns>.space.*` routes.
   const spacesDb = options.spacesDb ?? db;
-  const spacesCtx: SpacesContext | null =
+  let spacesCtx: SpacesContext | null =
     options.spacesCtx !== undefined
       ? options.spacesCtx
       : config.spaces
@@ -81,6 +88,24 @@ export function createApp(
             verifier: buildVerifier(config.spaces),
           }
         : null;
+
+  // Realtime pubsub is built up-front so the publishing decorator can reference
+  // it. The subscribe endpoint uses the same instance.
+  let realtimePubsub: PubSub | null = null;
+  if (config.realtime && spacesCtx) {
+    realtimePubsub =
+      options.realtime?.pubsub ?? config.realtime.pubsub ?? new InMemoryPubSub({
+        queueBound: config.realtime.queueBound,
+      });
+    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+    const isCommunityDid = communityAdapter
+      ? cachedIsCommunityDid(communityAdapter)
+      : undefined;
+    spacesCtx = {
+      ...spacesCtx,
+      adapter: wrapWithPublishing(spacesCtx.adapter, realtimePubsub, { isCommunityDid }),
+    };
+  }
 
   registerAdminRoutes(app, db, config);
   registerCollectionRoutes(app, db, config, spacesCtx);
@@ -103,5 +128,33 @@ export function createApp(
     );
   }
 
+  if (config.realtime && spacesCtx && realtimePubsub) {
+    const authMiddleware =
+      options.realtime?.authMiddleware ??
+      options.spaces?.authMiddleware ??
+      createServiceAuthMiddleware(spacesCtx.verifier);
+    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+    registerRealtimeRoutes(app, config, spacesCtx.adapter, communityAdapter, {
+      authMiddleware,
+      pubsub: realtimePubsub,
+    });
+  }
+
   return app;
+}
+
+function cachedIsCommunityDid(
+  community: CommunityAdapter
+): (did: string) => Promise<boolean> {
+  const TTL = 60_000;
+  const cache = new Map<string, { value: boolean; expires: number }>();
+  return async (did: string) => {
+    const now = Date.now();
+    const hit = cache.get(did);
+    if (hit && hit.expires > now) return hit.value;
+    const row = await community.getCommunity(did);
+    const value = row != null;
+    cache.set(did, { value, expires: now + TTL });
+    return value;
+  };
 }

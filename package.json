@@ -7,7 +7,8 @@
   "files": [
     "dist",
     "spaces-lexicon-templates/**/*.json",
-    "community-lexicon-templates/**/*.json"
+    "community-lexicon-templates/**/*.json",
+    "realtime-lexicon-templates/**/*.json"
   ],
   "exports": {
     ".": {
@@ -35,7 +36,8 @@
       "import": "./dist/publish.js"
     },
     "./spaces-lexicon-templates/*.json": "./spaces-lexicon-templates/*.json",
-    "./community-lexicon-templates/*.json": "./community-lexicon-templates/*.json"
+    "./community-lexicon-templates/*.json": "./community-lexicon-templates/*.json",
+    "./realtime-lexicon-templates/*.json": "./realtime-lexicon-templates/*.json"
   },
   "repository": {
     "type": "git",
@@ -67,6 +69,7 @@
   },
   "dependencies": {
     "@atcute/atproto": "^3.1.10",
+    "@atcute/cid": "^2.4.1",
     "@atcute/client": "^4.2.1",
     "@atcute/identity": "^1.1.4",
     "@atcute/identity-resolver": "^1.2.2",

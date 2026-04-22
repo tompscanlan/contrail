@@ -50,3 +50,26 @@ export type {
 export { HostedAdapter } from "./core/spaces/adapter";
 export { nextTid } from "./core/spaces/tid";
 export { generateInviteToken, hashInviteToken } from "./core/spaces/invite-token";
+
+// Realtime
+export type {
+  PubSub,
+  RealtimeConfig,
+  RealtimeEvent,
+  RealtimeEventKind,
+} from "./core/realtime/types";
+export {
+  InMemoryPubSub,
+  DurableObjectPubSub,
+  RealtimePubSubDO,
+  TicketSigner,
+  wrapWithPublishing,
+  sseResponse,
+  pumpWebSocket,
+  mergeAsyncIterables,
+  resolveTopicForCaller,
+  actorTopic,
+  collectionTopic,
+  communityTopic,
+  spaceTopic,
+} from "./core/realtime";

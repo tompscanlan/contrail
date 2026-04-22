@@ -158,6 +158,9 @@ export interface ContrailConfig {
   /** Community module configuration. When set, the service exposes community XRPCs
    *  for managing community-owned spaces and tiered access levels. Requires `spaces`. */
   community?: import("./community/types").CommunityConfig;
+  /** Realtime module configuration. When set, the service exposes ticket + SSE/WS
+   *  subscribe XRPCs, and wraps the spaces adapter to publish events after writes. */
+  realtime?: import("./realtime/types").RealtimeConfig;
   /** Customize the auto-generated `<namespace>.permissionSet` lexicon. */
   permissionSet?: PermissionSetConfig;
 }
