@@ -51,7 +51,15 @@ function mkEvent(overrides: Partial<RealtimeEvent> = {}): RealtimeEvent {
   return {
     topic: "space:at://x/y/z",
     kind: "record.created",
-    payload: { spaceUri: "at://x/y/z", collection: "c", authorDid: "did:plc:x", rkey: "r" },
+    payload: {
+      spaceUri: "at://x/y/z",
+      collection: "c",
+      authorDid: "did:plc:x",
+      rkey: "r",
+      cid: null,
+      record: {},
+      createdAt: 1,
+    },
     ts: 1,
     ...(overrides as any),
   };

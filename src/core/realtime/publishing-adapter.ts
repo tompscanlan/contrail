@@ -115,6 +115,9 @@ export function wrapWithPublishing(
           collection: record.collection,
           authorDid: record.authorDid,
           rkey: record.rkey,
+          cid: record.cid,
+          record: record.record,
+          createdAt: record.createdAt,
         },
         ts: now,
       }));

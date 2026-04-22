@@ -15,6 +15,9 @@ function mk(topic: string, n: number): RealtimeEvent {
       collection: "c",
       authorDid: "did:plc:x",
       rkey: String(n),
+      cid: null,
+      record: {},
+      createdAt: n,
     },
     ts: n,
   };

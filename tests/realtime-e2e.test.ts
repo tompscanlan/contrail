@@ -186,7 +186,12 @@ describe("realtime e2e (in-memory pubsub, SSE transport)", () => {
     expect(put.status).toBe(200);
     const next = await events.next();
     expect(next.done).toBe(false);
-    expect((next.value as RealtimeEvent).kind).toBe("record.created");
+    const event = next.value as RealtimeEvent & { kind: "record.created" };
+    expect(event.kind).toBe("record.created");
+    // Fat payload: subscribers can render the new record without a follow-up fetch.
+    expect(event.payload.record).toEqual({ text: "hello" });
+    expect(event.payload.collection).toBe("app.event.message");
+    expect(event.payload.authorDid).toBe(ALICE);
     close();
   });
 

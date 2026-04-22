@@ -1,11 +1,24 @@
 /** Realtime module — canonical types + interfaces. See docs/realtime.md. */
 
-/** Discriminated union of every event kind that flows through the PubSub. */
+/** Discriminated union of every event kind that flows through the PubSub.
+ *
+ *  `record.created` carries the full record body so a subscriber can apply an
+ *  insert or upsert without a follow-up `getRecord` call. `putRecord` over an
+ *  existing `(authorDid, rkey)` publishes another `record.created` — treat it
+ *  as upsert. */
 export type RealtimeEvent =
   | {
       topic: string;
       kind: "record.created";
-      payload: { spaceUri: string; collection: string; authorDid: string; rkey: string };
+      payload: {
+        spaceUri: string;
+        collection: string;
+        authorDid: string;
+        rkey: string;
+        cid: string | null;
+        record: Record<string, unknown>;
+        createdAt: number;
+      };
       ts: number;
     }
   | {
