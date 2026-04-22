@@ -32,10 +32,6 @@
         "serviceDid": {
           "type": "string"
         },
-        "memberListRef": {
-          "type": "string",
-          "format": "at-uri"
-        },
         "appPolicyRef": {
           "type": "string",
           "format": "at-uri"
@@ -54,21 +50,12 @@
       "type": "object",
       "required": [
         "did",
-        "perms",
         "addedAt"
       ],
       "properties": {
         "did": {
           "type": "string",
           "format": "did"
-        },
-        "perms": {
-          "type": "string",
-          "knownValues": [
-            "read",
-            "write"
-          ],
-          "description": "'write' implies 'read'. Space owner is always implicit write."
         },
         "addedAt": {
           "type": "integer"
@@ -146,7 +133,6 @@
         "tokenHash",
         "spaceUri",
         "kind",
-        "perms",
         "usedCount",
         "createdBy",
         "createdAt"
@@ -165,13 +151,6 @@
             "join",
             "read",
             "read-join"
-          ]
-        },
-        "perms": {
-          "type": "string",
-          "knownValues": [
-            "read",
-            "write"
           ]
         },
         "expiresAt": {

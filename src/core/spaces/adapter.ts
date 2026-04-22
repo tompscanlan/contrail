@@ -17,7 +17,6 @@ import type {
   ListOptions,
   ListResult,
   ListSpacesOptions,
-  MemberPerm,
   SpaceMemberRow,
   SpaceRow,
   StorageAdapter,
@@ -48,7 +47,6 @@ function mapSpaceRow(row: any): SpaceRow {
     type: row.type,
     key: row.key,
     serviceDid: row.service_did,
-    memberListRef: row.member_list_ref ?? null,
     appPolicyRef: row.app_policy_ref ?? null,
     appPolicy: parseJson<AppPolicy>(row.app_policy),
     createdAt: toNum(row.created_at),
@@ -60,7 +58,6 @@ function mapMemberRow(row: any): SpaceMemberRow {
   return {
     spaceUri: row.space_uri,
     did: row.did,
-    perms: row.perms as MemberPerm,
     addedAt: toNum(row.added_at),
     addedBy: row.added_by ?? null,
   };
@@ -71,7 +68,6 @@ function mapInviteRow(row: any): InviteRow {
     tokenHash: row.token_hash,
     spaceUri: row.space_uri,
     kind: (row.kind ?? "join") as InviteKind,
-    perms: row.perms,
     expiresAt: row.expires_at == null ? null : toNum(row.expires_at),
     maxUses: row.max_uses == null ? null : Number(row.max_uses),
     usedCount: Number(row.used_count),
@@ -123,8 +119,8 @@ export class HostedAdapter implements StorageAdapter {
     const now = Date.now();
     await this.db
       .prepare(
-        `INSERT INTO spaces (uri, owner_did, type, key, service_did, member_list_ref, app_policy_ref, app_policy, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO spaces (uri, owner_did, type, key, service_did, app_policy_ref, app_policy, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         space.uri,
@@ -132,7 +128,6 @@ export class HostedAdapter implements StorageAdapter {
         space.type,
         space.key,
         space.serviceDid,
-        space.memberListRef,
         space.appPolicyRef,
         space.appPolicy ? JSON.stringify(space.appPolicy) : null,
         now
@@ -203,14 +198,14 @@ export class HostedAdapter implements StorageAdapter {
       .run();
   }
 
-  async addMember(spaceUri: string, did: string, perms: MemberPerm, addedBy: string | null): Promise<void> {
+  async addMember(spaceUri: string, did: string, addedBy: string | null): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO spaces_members (space_uri, did, perms, added_at, added_by)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (space_uri, did) DO UPDATE SET perms = excluded.perms`
+        `INSERT INTO spaces_members (space_uri, did, added_at, added_by)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (space_uri, did) DO NOTHING`
       )
-      .bind(spaceUri, did, perms, Date.now(), addedBy)
+      .bind(spaceUri, did, Date.now(), addedBy)
       .run();
   }
 
@@ -237,18 +232,48 @@ export class HostedAdapter implements StorageAdapter {
     return results.map(mapMemberRow);
   }
 
+  async applyMembershipDiff(
+    spaceUri: string,
+    adds: string[],
+    removes: string[],
+    addedBy: string | null
+  ): Promise<void> {
+    const now = Date.now();
+    const stmts: any[] = [];
+    for (const did of adds) {
+      stmts.push(
+        this.db
+          .prepare(
+            `INSERT INTO spaces_members (space_uri, did, added_at, added_by)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (space_uri, did) DO NOTHING`
+          )
+          .bind(spaceUri, did, now, addedBy)
+      );
+    }
+    for (const did of removes) {
+      stmts.push(
+        this.db
+          .prepare(`DELETE FROM spaces_members WHERE space_uri = ? AND did = ?`)
+          .bind(spaceUri, did)
+      );
+    }
+    if (stmts.length > 0) {
+      await this.db.batch(stmts);
+    }
+  }
+
   async createInvite(input: CreateInviteInput): Promise<InviteRow> {
     const now = Date.now();
     await this.db
       .prepare(
-        `INSERT INTO spaces_invites (token_hash, space_uri, kind, perms, expires_at, max_uses, used_count, created_by, created_at, note)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
+        `INSERT INTO spaces_invites (token_hash, space_uri, kind, expires_at, max_uses, used_count, created_by, created_at, note)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`
       )
       .bind(
         input.tokenHash,
         input.spaceUri,
         input.kind,
-        input.perms,
         input.expiresAt,
         input.maxUses,
         input.createdBy,
@@ -260,7 +285,6 @@ export class HostedAdapter implements StorageAdapter {
       tokenHash: input.tokenHash,
       spaceUri: input.spaceUri,
       kind: input.kind,
-      perms: input.perms,
       expiresAt: input.expiresAt,
       maxUses: input.maxUses,
       usedCount: 0,

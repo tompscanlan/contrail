@@ -6,7 +6,8 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "spaces-lexicon-templates/**/*.json"
+    "spaces-lexicon-templates/**/*.json",
+    "community-lexicon-templates/**/*.json"
   ],
   "exports": {
     ".": {
@@ -33,7 +34,8 @@
       "types": "./dist/publish.d.ts",
       "import": "./dist/publish.js"
     },
-    "./spaces-lexicon-templates/*.json": "./spaces-lexicon-templates/*.json"
+    "./spaces-lexicon-templates/*.json": "./spaces-lexicon-templates/*.json",
+    "./community-lexicon-templates/*.json": "./community-lexicon-templates/*.json"
   },
   "repository": {
     "type": "git",

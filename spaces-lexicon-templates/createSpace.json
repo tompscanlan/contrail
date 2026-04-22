@@ -12,7 +12,6 @@
           "properties": {
             "type":          { "type": "string", "format": "nsid", "description": "Space type NSID. Defaults to the service's configured type." },
             "key":           { "type": "string", "description": "Space key. Auto-generated (TID) if omitted." },
-            "memberListRef": { "type": "string", "format": "at-uri" },
             "appPolicyRef":  { "type": "string", "format": "at-uri" },
             "appPolicy":     { "type": "ref", "ref": "tools.atmo.space.defs#appPolicy" }
           }

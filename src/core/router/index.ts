@@ -8,10 +8,12 @@ import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
 import { registerSpacesRoutes } from "../spaces/router";
 import type { SpacesRoutesOptions } from "../spaces/router";
-import { buildVerifier } from "../spaces/auth";
+import { buildVerifier, createServiceAuthMiddleware } from "../spaces/auth";
 import { HostedAdapter } from "../spaces/adapter";
 import type { StorageAdapter } from "../spaces/types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
+import { registerCommunityRoutes } from "../community/router";
+import type { CommunityRoutesOptions } from "../community/router";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
@@ -23,6 +25,7 @@ export interface SpacesContext {
 
 export interface CreateAppOptions {
   spaces?: SpacesRoutesOptions;
+  community?: CommunityRoutesOptions;
   /** Separate DB for the spaces tables. Defaults to `db`. */
   spacesDb?: Database;
   /** Full spaces context override (escape hatch for tests). */
@@ -84,6 +87,21 @@ export function createApp(
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
   registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx);
+
+  if (config.community && spacesCtx) {
+    // Community routes reuse the spaces service-auth middleware (same JWT verifier).
+    const authMiddleware =
+      options.community?.authMiddleware ??
+      options.spaces?.authMiddleware ??
+      createServiceAuthMiddleware(spacesCtx.verifier);
+    registerCommunityRoutes(
+      app,
+      spacesDb,
+      config,
+      { ...options.community, authMiddleware },
+      { spacesAdapter: spacesCtx.adapter, verifier: spacesCtx.verifier }
+    );
+  }
 
   return app;
 }

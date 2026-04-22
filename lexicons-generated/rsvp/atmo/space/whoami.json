@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Report the caller's relationship to a space: whether they are the owner, a member, and at what permission level. Useful for clients to avoid a listMembers roundtrip.",
+      "description": "Report the caller's relationship to a space: whether they are the owner and/or a member. Useful for clients to avoid a listMembers roundtrip.",
       "parameters": {
         "type": "params",
         "required": [
@@ -31,14 +31,6 @@
             },
             "isMember": {
               "type": "boolean"
-            },
-            "perms": {
-              "type": "string",
-              "knownValues": [
-                "read",
-                "write"
-              ],
-              "description": "Present only when the caller is a member or the owner."
             }
           }
         }

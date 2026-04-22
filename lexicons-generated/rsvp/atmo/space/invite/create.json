@@ -27,14 +27,6 @@
               "default": "join",
               "description": "join: redeem to become a member. read: bearer-only read access, no membership. read-join: anonymous read + signed-in redeem to join."
             },
-            "perms": {
-              "type": "string",
-              "knownValues": [
-                "read",
-                "write"
-              ],
-              "default": "write"
-            },
             "expiresAt": {
               "type": "integer",
               "description": "Unix ms timestamp. Omit for no expiry."

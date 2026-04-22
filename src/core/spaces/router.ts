@@ -13,7 +13,7 @@ import {
 import { nextTid } from "./tid";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
 import { buildSpaceUri } from "./uri";
-import type { InviteKind, InviteRow, MemberPerm, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
+import type { InviteKind, InviteRow, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
 import type { Did } from "@atcute/lexicons";
 
 export interface SpacesRoutesOptions {
@@ -273,7 +273,6 @@ export function registerSpacesRoutes(
       type?: string;
       key?: string;
       appPolicy?: SpaceRow["appPolicy"];
-      memberListRef?: string;
       appPolicyRef?: string;
     };
 
@@ -290,12 +289,11 @@ export function registerSpacesRoutes(
       type,
       key,
       serviceDid: spacesConfig.serviceDid,
-      memberListRef: body.memberListRef ?? null,
       appPolicyRef: body.appPolicyRef ?? null,
       appPolicy: body.appPolicy ?? spacesConfig.defaultAppPolicy ?? null,
     });
     // Owner is implicit; we still write a row so membership queries are uniform.
-    await adapter.addMember(uri, sa.issuer, "write", sa.issuer);
+    await adapter.addMember(uri, sa.issuer, sa.issuer);
 
     return c.json({ space: publicSpaceView(space, true) });
   });
@@ -307,7 +305,6 @@ export function registerSpacesRoutes(
       | {
           spaceUri?: string;
           kind?: InviteKind;
-          perms?: MemberPerm;
           expiresAt?: number;
           maxUses?: number;
           note?: string;
@@ -332,7 +329,6 @@ export function registerSpacesRoutes(
       spaceUri: body.spaceUri,
       tokenHash,
       kind,
-      perms: body.perms ?? "write",
       expiresAt: body.expiresAt ?? null,
       maxUses: body.maxUses ?? null,
       createdBy: sa.issuer,
@@ -352,8 +348,8 @@ export function registerSpacesRoutes(
     if (!invite) {
       return c.json({ error: "InvalidInvite", reason: "expired-revoked-or-exhausted" }, 400);
     }
-    await adapter.addMember(invite.spaceUri, sa.issuer, invite.perms, invite.createdBy);
-    return c.json({ spaceUri: invite.spaceUri, perms: invite.perms });
+    await adapter.addMember(invite.spaceUri, sa.issuer, invite.createdBy);
+    return c.json({ spaceUri: invite.spaceUri });
   });
 
   app.get(`/xrpc/${SPACE}.invite.list`, auth, async (c) => {
@@ -390,7 +386,7 @@ export function registerSpacesRoutes(
   app.post(`/xrpc/${SPACE}.addMember`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; did?: string; perms?: MemberPerm }
+      | { spaceUri?: string; did?: string }
       | null;
     if (!body?.spaceUri || !body.did) {
       return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
@@ -400,7 +396,7 @@ export function registerSpacesRoutes(
     if (space.ownerDid !== sa.issuer) {
       return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
     }
-    await adapter.addMember(body.spaceUri, body.did, body.perms ?? "write", sa.issuer);
+    await adapter.addMember(body.spaceUri, body.did, sa.issuer);
     return c.json({ ok: true });
   });
 
@@ -451,11 +447,11 @@ export function registerSpacesRoutes(
 
     const isOwner = space.ownerDid === sa.issuer;
     if (isOwner) {
-      return c.json({ isOwner: true, isMember: true, perms: "write" as const });
+      return c.json({ isOwner: true, isMember: true });
     }
     const member = await adapter.getMember(spaceUri, sa.issuer);
     if (!member) return c.json({ isOwner: false, isMember: false });
-    return c.json({ isOwner: false, isMember: true, perms: member.perms });
+    return c.json({ isOwner: false, isMember: true });
   });
 }
 
@@ -475,7 +471,6 @@ function publicInviteView(invite: InviteRow) {
     tokenHash: invite.tokenHash,
     spaceUri: invite.spaceUri,
     kind: invite.kind,
-    perms: invite.perms,
     expiresAt: invite.expiresAt,
     maxUses: invite.maxUses,
     usedCount: invite.usedCount,
@@ -493,7 +488,6 @@ function publicSpaceView(space: SpaceRow, forOwner: boolean) {
     type: space.type,
     key: space.key,
     serviceDid: space.serviceDid,
-    memberListRef: space.memberListRef,
     appPolicyRef: space.appPolicyRef,
     createdAt: space.createdAt,
     ...(forOwner ? { appPolicy: space.appPolicy } : {}),

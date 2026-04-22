@@ -17,7 +17,6 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
       type TEXT NOT NULL,
       key TEXT NOT NULL,
       service_did TEXT NOT NULL,
-      member_list_ref TEXT,
       app_policy_ref TEXT,
       app_policy ${dialect.recordColumnType},
       created_at ${dialect.bigintType} NOT NULL,
@@ -29,7 +28,6 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
     `CREATE TABLE IF NOT EXISTS spaces_members (
       space_uri TEXT NOT NULL,
       did TEXT NOT NULL,
-      perms TEXT NOT NULL,
       added_at ${dialect.bigintType} NOT NULL,
       added_by TEXT,
       PRIMARY KEY (space_uri, did)
@@ -40,7 +38,6 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
       token_hash TEXT PRIMARY KEY,
       space_uri TEXT NOT NULL,
       kind TEXT NOT NULL DEFAULT 'join',
-      perms TEXT NOT NULL,
       expires_at ${dialect.bigintType},
       max_uses INTEGER,
       used_count INTEGER NOT NULL DEFAULT 0,

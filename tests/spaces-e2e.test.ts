@@ -136,7 +136,6 @@ describe("spaces e2e", () => {
     const res = await call(app, "POST", "/xrpc/test.spaces.space.addMember", ALICE, {
       spaceUri,
       did: BOB,
-      perms: "write",
     });
     expect(res.status).toBe(200);
   });

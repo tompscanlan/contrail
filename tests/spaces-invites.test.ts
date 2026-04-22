@@ -93,7 +93,6 @@ describe("invite e2e", () => {
   it("owner creates an invite and Bob redeems it to become a member", async () => {
     const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
       spaceUri,
-      perms: "write",
     });
     expect(create.status).toBe(200);
     const { token, invite } = (await create.json()) as any;
@@ -106,7 +105,6 @@ describe("invite e2e", () => {
     expect(redeem.status).toBe(200);
     const body = (await redeem.json()) as any;
     expect(body.spaceUri).toBe(spaceUri);
-    expect(body.perms).toBe("write");
 
     // Bob is now a member — can write a message
     const put = await call(app, "POST", "/xrpc/test.spaces.space.putRecord", BOB, {
@@ -201,7 +199,7 @@ describe("invite e2e", () => {
 
   it("read-join token grants anonymous read AND can be redeemed for membership", async () => {
     const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
-      spaceUri, kind: "read-join", perms: "write",
+      spaceUri, kind: "read-join",
     });
     const { token, invite } = (await create.json()) as any;
     expect(invite.kind).toBe("read-join");

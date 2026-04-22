@@ -11,6 +11,7 @@ import {
 } from "../types";
 import { getSearchableFields } from "../search";
 import { buildSpacesBaseSchema } from "../spaces/schema";
+import { buildCommunitySchema } from "../community/schema";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
@@ -307,6 +308,13 @@ export async function initSchema(
 
   if (config.spaces) {
     await applySpacesSchema(spacesSharesMainDb ? db : spacesDb!, config, dialect);
+  }
+
+  if (config.community) {
+    // Community tables live on the same DB as spaces (they reference space_uri).
+    const target = spacesSharesMainDb ? db : spacesDb!;
+    const communityStmts = buildCommunitySchema(dialect);
+    await target.batch(communityStmts.map((s) => target.prepare(s)));
   }
 
   // FTS5 may not be available (e.g. node:sqlite) — skip gracefully

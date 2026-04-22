@@ -3,10 +3,21 @@ import type { ContrailConfig } from "../src/index";
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
   jetstreams: ["wss://jetstream1.us-east.bsky.network"],
-  // spaces: {
-  //   type: "tools.atmo.event.space",
-  //   serviceDid: "did:web:rsvp.atmo",
-  // },
+  spaces: {
+    type: "tools.atmo.event.space",
+    serviceDid: "did:web:rsvp.atmo",
+  },
+  community: {
+    // 32-byte master key for envelope-encrypting stored credentials (app
+    // passwords + minted signing/rotation keys). Provide via env: hex or
+    // base64 encoded. For Cloudflare Workers, wire from env.COMMUNITY_MASTER_KEY
+    // via a config factory pattern. The placeholder below is fine for `pnpm
+    // generate` (which never instantiates the cipher) but must be replaced
+    // before starting the server.
+    masterKey:
+      (typeof process !== "undefined" ? process.env.COMMUNITY_MASTER_KEY : undefined) ??
+      "placeholder-set-me-before-running-server-not-at-build-time",
+  },
   collections: {
     event: {
       collection: "community.lexicon.calendar.event",

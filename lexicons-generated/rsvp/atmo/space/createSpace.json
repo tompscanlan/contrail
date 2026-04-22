@@ -19,10 +19,6 @@
               "type": "string",
               "description": "Space key. Auto-generated (TID) if omitted."
             },
-            "memberListRef": {
-              "type": "string",
-              "format": "at-uri"
-            },
             "appPolicyRef": {
               "type": "string",
               "format": "at-uri"

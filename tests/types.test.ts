@@ -183,7 +183,7 @@ describe("resolveConfig", () => {
 
   it("applies default jetstreams and relays", () => {
     const resolved = resolveConfig({ namespace: "test", collections: {} });
-    expect(resolved.jetstreams).toHaveLength(4);
+    expect(resolved.jetstreams).toHaveLength(1);
     expect(resolved.relays).toHaveLength(1);
   });
 

@@ -155,6 +155,9 @@ export interface ContrailConfig {
   notify?: boolean | string;
   /** Permissioned spaces configuration. When set, the service exposes space XRPCs. */
   spaces?: import("./spaces/types").SpacesConfig;
+  /** Community module configuration. When set, the service exposes community XRPCs
+   *  for managing community-owned spaces and tiered access levels. Requires `spaces`. */
+  community?: import("./community/types").CommunityConfig;
   /** Customize the auto-generated `<namespace>.permissionSet` lexicon. */
   permissionSet?: PermissionSetConfig;
 }

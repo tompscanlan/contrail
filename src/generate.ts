@@ -40,6 +40,17 @@ function findSpaceTemplatesDir(rootDir: string): string | null {
   return null;
 }
 
+function findCommunityTemplatesDir(rootDir: string): string | null {
+  const candidates = [
+    join(rootDir, "community-lexicon-templates"),
+    join(rootDir, "node_modules/@atmo-dev/contrail/community-lexicon-templates"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
 /** Yield all JSON files under a directory (recursive). */
 function* walkJson(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -700,6 +711,48 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           for (const [k, v] of Object.entries(obj)) {
             if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.space")) {
               out[k] = v.replace(/^tools\.atmo\.space/, `${ns}.space`);
+            } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
+              out[k] = idReplace(v);
+            } else {
+              out[k] = rewriteRefs(v);
+            }
+          }
+          return out;
+        }
+        return obj;
+      };
+
+      for (const file of walkJson(templatesDir)) {
+        const doc = JSON.parse(readFileSync(file, "utf-8"));
+        if (typeof doc.id !== "string" || !templateIdRe.test(doc.id)) continue;
+        const newId = idReplace(doc.id);
+        const rewritten = rewriteRefs({ ...doc, id: newId });
+        writeLexicon(newId, rewritten);
+      }
+    }
+  }
+
+  // --- Community: instantiate library templates under <ns>.community.* ---
+
+  if (config.community) {
+    log("Generating community endpoints...");
+    const templatesDir = findCommunityTemplatesDir(rootDir);
+    if (!templatesDir) {
+      log("  (community templates not found — skipping)");
+    } else {
+      const templateIdRe = /^tools\.atmo\.community(\.[A-Za-z0-9.]+)?$/;
+      const idReplace = (id: string) =>
+        id.startsWith("tools.atmo.community")
+          ? id.replace(/^tools\.atmo\.community/, `${ns}.community`)
+          : id;
+
+      const rewriteRefs = (obj: any): any => {
+        if (Array.isArray(obj)) return obj.map(rewriteRefs);
+        if (obj && typeof obj === "object") {
+          const out: any = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.community")) {
+              out[k] = v.replace(/^tools\.atmo\.community/, `${ns}.community`);
             } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
               out[k] = idReplace(v);
             } else {

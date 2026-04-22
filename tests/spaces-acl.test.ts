@@ -9,7 +9,6 @@ function mkSpace(overrides: Partial<SpaceRow> = {}): SpaceRow {
     type: "tools.atmo.event.space",
     key: "s1",
     serviceDid: "did:web:example.com#svc",
-    memberListRef: null,
     appPolicyRef: null,
     appPolicy: null,
     createdAt: 1,
@@ -18,8 +17,8 @@ function mkSpace(overrides: Partial<SpaceRow> = {}): SpaceRow {
   };
 }
 
-function mkMember(did: string, perms: "read" | "write" = "write"): SpaceMemberRow {
-  return { spaceUri: "x", did, perms, addedAt: 1, addedBy: null };
+function mkMember(did: string): SpaceMemberRow {
+  return { spaceUri: "x", did, addedAt: 1, addedBy: null };
 }
 
 describe("spaces acl", () => {
@@ -48,38 +47,17 @@ describe("spaces acl", () => {
     expect((r as any).reason).toBe("not-member");
   });
 
-  it("member with read perm can read", () => {
+  it("member can read and write (no perm tiering)", () => {
     const s = mkSpace();
-    const r = checkAccess({
-      op: "read",
-      space: s,
-      callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "read"),
-    });
-    expect(r.allow).toBe(true);
-  });
-
-  it("member with read perm cannot write", () => {
-    const s = mkSpace();
-    const r = checkAccess({
-      op: "write",
-      space: s,
-      callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "read"),
-    });
-    expect(r.allow).toBe(false);
-    expect((r as any).reason).toBe("not-writer");
-  });
-
-  it("member with write perm can write", () => {
-    const s = mkSpace();
-    const r = checkAccess({
-      op: "write",
-      space: s,
-      callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "write"),
-    });
-    expect(r.allow).toBe(true);
+    for (const op of ["read", "write"] as const) {
+      const r = checkAccess({
+        op,
+        space: s,
+        callerDid: "did:plc:bob",
+        member: mkMember("did:plc:bob"),
+      });
+      expect(r.allow).toBe(true);
+    }
   });
 
   it("non-member cannot write", () => {
@@ -91,28 +69,28 @@ describe("spaces acl", () => {
       member: null,
     });
     expect(r.allow).toBe(false);
-    expect((r as any).reason).toBe("not-writer");
+    expect((r as any).reason).toBe("not-member");
   });
 
-  it("delete own: member-with-write can delete own record", () => {
+  it("delete own: member can delete own record", () => {
     const s = mkSpace();
     const r = checkAccess({
       op: "delete",
       space: s,
       callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "write"),
+      member: mkMember("did:plc:bob"),
       targetAuthorDid: "did:plc:bob",
     });
     expect(r.allow).toBe(true);
   });
 
-  it("delete other's: member-with-write cannot delete someone else's record", () => {
+  it("delete other's: member cannot delete someone else's record", () => {
     const s = mkSpace();
     const r = checkAccess({
       op: "delete",
       space: s,
       callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "write"),
+      member: mkMember("did:plc:bob"),
       targetAuthorDid: "did:plc:charlie",
     });
     expect(r.allow).toBe(false);
@@ -131,17 +109,17 @@ describe("spaces acl", () => {
     expect(r.allow).toBe(true);
   });
 
-  it("delete without write perm: read-only member cannot delete own", () => {
+  it("delete by non-member: denied as not-member, not not-own-record", () => {
     const s = mkSpace();
     const r = checkAccess({
       op: "delete",
       space: s,
       callerDid: "did:plc:bob",
-      member: mkMember("did:plc:bob", "read"),
+      member: null,
       targetAuthorDid: "did:plc:bob",
     });
     expect(r.allow).toBe(false);
-    expect((r as any).reason).toBe("not-writer");
+    expect((r as any).reason).toBe("not-member");
   });
 
   it("app policy: allow-mode with apps[] denylists those apps", () => {

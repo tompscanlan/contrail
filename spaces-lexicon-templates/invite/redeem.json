@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Redeem an invite token. The JWT issuer becomes a member of the space with the invite's perms.",
+      "description": "Redeem an invite token. The JWT issuer becomes a member of the space.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -19,10 +19,9 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["spaceUri", "perms"],
+          "required": ["spaceUri"],
           "properties": {
-            "spaceUri": { "type": "string", "format": "at-uri" },
-            "perms":    { "type": "string", "knownValues": ["read", "write"] }
+            "spaceUri": { "type": "string", "format": "at-uri" }
           }
         }
       },

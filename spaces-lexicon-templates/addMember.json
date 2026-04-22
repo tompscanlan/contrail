@@ -12,8 +12,7 @@
           "required": ["spaceUri", "did"],
           "properties": {
             "spaceUri": { "type": "string", "format": "at-uri" },
-            "did":      { "type": "string", "format": "did" },
-            "perms":    { "type": "string", "knownValues": ["read", "write"], "default": "write" }
+            "did":      { "type": "string", "format": "did" }
           }
         }
       },

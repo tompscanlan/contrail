@@ -1,9 +1,6 @@
 import type { Database } from "../types";
 import type { DidDocumentResolver } from "@atcute/identity-resolver";
 
-/** Member permission in a space. "write" implies "read"; owner is always implicit write. */
-export type MemberPerm = "read" | "write";
-
 export type AppPolicyMode = "allow" | "deny";
 
 export interface AppPolicy {
@@ -29,7 +26,6 @@ export interface SpaceRow {
   type: string;
   key: string;
   serviceDid: string;
-  memberListRef: string | null;
   appPolicyRef: string | null;
   appPolicy: AppPolicy | null;
   createdAt: number;
@@ -39,7 +35,6 @@ export interface SpaceRow {
 export interface SpaceMemberRow {
   spaceUri: string;
   did: string;
-  perms: MemberPerm;
   addedAt: number;
   addedBy: string | null;
 }
@@ -79,7 +74,7 @@ export interface CollectionCount {
 }
 
 /** What a token holder can do with this invite.
- *  - `'join'`: must be redeemed while signed in; becomes a member with `perms`.
+ *  - `'join'`: must be redeemed while signed in; redeemer becomes a member.
  *  - `'read'`: bearer-only — token itself grants read access to the space; cannot be redeemed.
  *  - `'read-join'`: both — anonymous holders read; signed-in holders may also redeem to join. */
 export type InviteKind = "join" | "read" | "read-join";
@@ -88,7 +83,6 @@ export interface InviteRow {
   tokenHash: string;
   spaceUri: string;
   kind: InviteKind;
-  perms: MemberPerm;
   expiresAt: number | null;
   maxUses: number | null;
   usedCount: number;
@@ -102,7 +96,6 @@ export interface CreateInviteInput {
   spaceUri: string;
   tokenHash: string;
   kind: InviteKind;
-  perms: MemberPerm;
   expiresAt: number | null;
   maxUses: number | null;
   createdBy: string;
@@ -111,7 +104,6 @@ export interface CreateInviteInput {
 
 export interface RedeemInviteResult {
   spaceUri: string;
-  perms: MemberPerm;
 }
 
 export interface StorageAdapter {
@@ -123,10 +115,18 @@ export interface StorageAdapter {
   updateSpaceAppPolicy(spaceUri: string, appPolicy: AppPolicy): Promise<void>;
 
   // Members
-  addMember(spaceUri: string, did: string, perms: MemberPerm, addedBy: string | null): Promise<void>;
+  addMember(spaceUri: string, did: string, addedBy: string | null): Promise<void>;
   removeMember(spaceUri: string, did: string): Promise<void>;
   getMember(spaceUri: string, did: string): Promise<SpaceMemberRow | null>;
   listMembers(spaceUri: string): Promise<SpaceMemberRow[]>;
+  /** Bulk-apply a membership diff. Used only by the community module's reconciler;
+   *  not exposed as an XRPC endpoint. */
+  applyMembershipDiff(
+    spaceUri: string,
+    adds: string[],
+    removes: string[],
+    addedBy: string | null
+  ): Promise<void>;
 
   // Invites
   createInvite(input: CreateInviteInput): Promise<InviteRow>;
