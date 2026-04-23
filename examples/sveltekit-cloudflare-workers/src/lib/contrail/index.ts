@@ -1,6 +1,6 @@
 import { Contrail } from '@atmo-dev/contrail';
-import { createHandler } from '@atmo-dev/contrail/server';
-import { Client } from '@atcute/client';
+import { createHandler, createServerClient } from '@atmo-dev/contrail/server';
+import type { Client } from '@atcute/client';
 import { config } from './config';
 
 export const contrail = new Contrail(config);
@@ -17,15 +17,13 @@ export async function ensureInit(db: D1Database) {
 const handle = createHandler(contrail);
 
 /**
- * Server-side: fully typed @atcute/client that routes through contrail in-process.
- * No HTTP roundtrip — calls createHandler directly.
+ * Typed `@atcute/client` that calls contrail in-process. Pass `did` to act
+ * as that user (server-side principal via WeakMap marker — no JWT, no PDS
+ * roundtrip). Omit for anonymous calls against public endpoints.
  */
-export function getServerClient(db: D1Database) {
-	return new Client({
-		handler: async (pathname, init) => {
-			await ensureInit(db);
-			const url = new URL(pathname, 'http://localhost');
-			return handle(new Request(url, init), db) as Promise<Response>;
-		}
-	});
+export function getServerClient(db: D1Database, did?: string): Client {
+	return createServerClient(async (req) => {
+		await ensureInit(db);
+		return handle(req, db) as Promise<Response>;
+	}, did);
 }

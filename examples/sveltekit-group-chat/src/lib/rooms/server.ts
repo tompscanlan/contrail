@@ -1,27 +1,23 @@
 /** Server-side helpers for calling contrail's authenticated XRPCs.
  *
- *  Contrail's community/space/realtime endpoints authenticate via atproto
- *  service-auth JWTs. The caller's OAuth session on their PDS can mint those
- *  JWTs via `com.atproto.server.getServiceAuth`. This module wraps that dance:
- *  mint → dispatch → return the typed body.
- */
+ *  All calls route through contrail in-process using the WeakMap-backed
+ *  in-process auth marker (see `@atmo-dev/contrail/server` → `markInProcess`).
+ *  No JWT minting, no PDS roundtrip — the principal is stamped onto the
+ *  Request by `ctx.did` and the auth middleware reads it directly. */
 
-import type { Client } from '@atcute/client';
+import { markInProcess } from '@atmo-dev/contrail/server';
 import { dispatch } from '$lib/contrail';
 
 type Env = App.Platform['env'];
 
 interface AuthedCallContext {
 	env: Env;
-	/** Caller's OAuth-authenticated atproto client (talks to their PDS). */
-	client: Client;
-	/** Caller's DID. */
+	/** Caller's DID — the principal attributed to each request. */
 	did: string;
 }
 
-/** Authenticated fetch for page loaders — mints a service-auth JWT
- *  (or takes the dev bypass) and dispatches to contrail in-process.
- *  Returns the parsed JSON body, or throws with status + payload. */
+/** Authenticated fetch for page loaders. Returns the parsed JSON body,
+ *  or throws with status + payload on non-2xx. */
 export async function authedFetch<T = unknown>(
 	ctx: AuthedCallContext,
 	method: string,
@@ -30,53 +26,22 @@ export async function authedFetch<T = unknown>(
 	return callContrail<T>(ctx, method, opts);
 }
 
-async function mintServiceAuth(
-	ctx: AuthedCallContext,
-	lxm: string,
-	expSeconds = 60
-): Promise<string> {
-	// Dev bypass: the contrail authOverride trusts our signed session cookie
-	// instead of a real JWT, so we don't need to hit the PDS. Returns a sentinel
-	// the override ignores (any string is fine — it's never verified).
-	if (ctx.env.DEV_AUTH === '1') {
-		return 'dev';
-	}
-	const res = await ctx.client.get('com.atproto.server.getServiceAuth', {
-		params: {
-			aud: ctx.env.SERVICE_DID as `did:${string}:${string}`,
-			lxm: lxm as `${string}.${string}.${string}`,
-			exp: Math.floor(Date.now() / 1000) + expSeconds
-		}
-	});
-	if (!res.ok) {
-		throw new Error(`getServiceAuth failed: ${JSON.stringify(res.data)}`);
-	}
-	const data = res.data as { token: string };
-	return data.token;
-}
-
 async function callContrail<T = unknown>(
 	ctx: AuthedCallContext,
 	method: string,
 	opts: { body?: unknown; query?: Record<string, string>; httpMethod?: 'GET' | 'POST' }
 ): Promise<T> {
-	const jwt = await mintServiceAuth(ctx, method);
 	const url = new URL(`http://localhost/xrpc/${method}`);
 	for (const [k, v] of Object.entries(opts.query ?? {})) {
 		url.searchParams.set(k, v);
 	}
 	const httpMethod = opts.httpMethod ?? (opts.body === undefined ? 'GET' : 'POST');
-	const devAuth = ctx.env.DEV_AUTH === '1';
-	const headers: Record<string, string> = {
-		Authorization: `Bearer ${jwt}`,
-		...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {})
-	};
-	if (devAuth) headers['X-Dev-Did'] = ctx.did;
 	const req = new Request(url, {
 		method: httpMethod,
-		headers,
+		headers: opts.body !== undefined ? { 'Content-Type': 'application/json' } : {},
 		body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined
 	});
+	markInProcess(req, ctx.did);
 	const res = await dispatch(req, ctx.env);
 	const text = await res.text();
 	const json = text ? JSON.parse(text) : {};
@@ -225,6 +190,33 @@ export async function getRealtimeTicket(
 	return callContrail(ctx, 'tools.atmo.chat.realtime.ticket', { body: input });
 }
 
+/** Mint a watch-scoped ticket for a `<collection>.watchRecords` stream by
+ *  running the `mode=ws` handshake in-process. The response's `ticket` carries
+ *  the (did, topic, querySpec) binding that watchRecords verifies on SSE or
+ *  WS connect, so the browser can attach it as `?ticket=...` with no other
+ *  auth. The snapshot body is discarded — the sync engine will run its own
+ *  snapshot on the ticketed connection. */
+export async function mintWatchTicket(
+	ctx: AuthedCallContext,
+	input: { watchRecordsNsid: string; spaceUri: string; limit?: number }
+): Promise<{ ticket: string; expiresAt: number }> {
+	const url = new URL(`http://localhost/xrpc/${input.watchRecordsNsid}`);
+	url.searchParams.set('spaceUri', input.spaceUri);
+	url.searchParams.set('mode', 'ws');
+	if (input.limit) url.searchParams.set('limit', String(input.limit));
+	const req = new Request(url, { headers: { accept: 'application/json' } });
+	markInProcess(req, ctx.did);
+	const res = await dispatch(req, ctx.env);
+	const text = await res.text();
+	if (!res.ok) throw new Error(`mintWatchTicket failed (${res.status}): ${text}`);
+	const data = JSON.parse(text) as { ticket?: string; ticketTtlMs?: number };
+	if (!data.ticket) throw new Error('mintWatchTicket: handshake did not return a ticket');
+	return {
+		ticket: data.ticket,
+		expiresAt: Date.now() + (data.ticketTtlMs ?? 120_000)
+	};
+}
+
 // --- invites ---------------------------------------------------------------
 
 export interface InviteView {
@@ -301,40 +293,21 @@ export async function uploadBlob(
 	input: { spaceUri: string; mimeType: string; bytes: Uint8Array }
 ): Promise<BlobRef> {
 	const method = 'tools.atmo.chat.space.uploadBlob';
-	const jwt = ctx.env.DEV_AUTH === '1' ? 'dev' : await mintServiceAuthForUpload(ctx, method);
 	const url = new URL(`http://localhost/xrpc/${method}`);
 	url.searchParams.set('spaceUri', input.spaceUri);
-	const headers: Record<string, string> = {
-		Authorization: `Bearer ${jwt}`,
-		'Content-Type': input.mimeType,
-		'Content-Length': String(input.bytes.byteLength)
-	};
-	if (ctx.env.DEV_AUTH === '1') headers['X-Dev-Did'] = ctx.did;
 
 	const req = new Request(url, {
 		method: 'POST',
-		headers,
+		headers: {
+			'Content-Type': input.mimeType,
+			'Content-Length': String(input.bytes.byteLength)
+		},
 		body: new Blob([new Uint8Array(input.bytes)], { type: input.mimeType })
 	});
+	markInProcess(req, ctx.did);
 	const res = await dispatch(req, ctx.env);
 	const text = await res.text();
 	const json = text ? JSON.parse(text) : {};
 	if (!res.ok) throw new Error(`${method} failed (${res.status}): ${text}`);
 	return (json as { blob: BlobRef }).blob;
-}
-
-async function mintServiceAuthForUpload(
-	ctx: AuthedCallContext,
-	lxm: string,
-	expSeconds = 60
-): Promise<string> {
-	const res = await ctx.client.get('com.atproto.server.getServiceAuth', {
-		params: {
-			aud: ctx.env.SERVICE_DID as `did:${string}:${string}`,
-			lxm: lxm as `${string}.${string}.${string}`,
-			exp: Math.floor(Date.now() / 1000) + expSeconds
-		}
-	});
-	if (!res.ok) throw new Error('getServiceAuth failed');
-	return (res.data as { token: string }).token;
 }

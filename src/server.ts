@@ -1,5 +1,7 @@
+import { Client } from "@atcute/client";
 import type { Contrail } from "./contrail";
 import type { Database } from "./core/types";
+import { markInProcess } from "./core/spaces/in-process";
 
 /**
  * Create an HTTP handler from a Contrail instance.
@@ -27,3 +29,33 @@ export function createHandler(
     return cached(request);
   };
 }
+
+/**
+ * Fully typed `@atcute/client` Client that routes XRPC calls through a
+ * contrail handler in-process — no HTTP roundtrip, no JWT minting.
+ *
+ * Pass `did` to act as that user; omit for anonymous calls (public endpoints
+ * only). Authentication is via the in-process WeakMap marker, which is
+ * unforgeable across network boundaries.
+ *
+ *   // Same-process on Cloudflare Workers (per-request DB):
+ *   const client = createServerClient(
+ *     (req) => contrail.handler({ db: env.DB })(req),
+ *     session.did,
+ *   );
+ *   await client.post('tools.atmo.chat.space.putRecord', { input: { ... } });
+ */
+export function createServerClient(
+  handle: (req: Request) => Promise<Response>,
+  did?: string
+): Client {
+  return new Client({
+    handler: async (pathname, init) => {
+      const req = new Request(new URL(pathname, "http://localhost"), init);
+      if (did !== undefined) markInProcess(req, did);
+      return handle(req);
+    },
+  });
+}
+
+export { markInProcess };

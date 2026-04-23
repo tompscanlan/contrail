@@ -1,11 +1,10 @@
 import type { PageServerLoad } from './$types';
 import { error } from '@sveltejs/kit';
-import type { Client } from '@atcute/client';
 import { listCommunityInvites } from '$lib/rooms/server';
 import { buildMembersUri } from '$lib/rooms/uri';
 
 export const load: PageServerLoad = async ({ locals, params, platform }) => {
-	if (!locals.did || !locals.client) error(401, 'Not authenticated');
+	if (!locals.did) error(401, 'Not authenticated');
 	const communityDid = decodeURIComponent(params.communityDid);
 	const membersUri = buildMembersUri(communityDid);
 
@@ -23,11 +22,7 @@ export const load: PageServerLoad = async ({ locals, params, platform }) => {
 	}> = [];
 	try {
 		const res = await listCommunityInvites(
-			{
-				env: platform!.env,
-				client: locals.client as Client,
-				did: locals.did as string
-			},
+			{ env: platform!.env, did: locals.did as string },
 			{ spaceUri: membersUri, includeRevoked: true }
 		);
 		invites = res.invites.map((r) => ({

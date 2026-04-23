@@ -33,18 +33,15 @@ export interface WatchStoreOptions {
 	/** Transport. Default: 'sse'. Use 'ws' on Cloudflare for DO-terminated
 	 *  long-lived subscriptions that hibernate while idle. */
 	transport?: "sse" | "ws";
-	/** Optional: provide a ticket string (for `?ticket=...`-style auth).
-	 *  When omitted, the connection is opened without an explicit token —
-	 *  rely on cookies / bearer tokens your fetch policy sends automatically. */
+	/** Mint a watch-scoped ticket to auth the connection. Called once per
+	 *  connect attempt; the returned ticket is sent as `?ticket=...` on the
+	 *  SSE connection or on the `mode=ws` handshake fetch. Omit for public
+	 *  (no-auth) endpoints.
+	 *
+	 *  For atproto-based services, tickets are typically minted server-side
+	 *  via `<ns>.realtime.ticket` (or via an app-specific route that runs
+	 *  the `mode=ws` handshake in-process and returns the signed ticket). */
 	fetchTicket?: () => Promise<string>;
-	/** Optional: mint a short-lived bearer token (typically an atproto
-	 *  service-auth JWT scoped to `<collection>.watchRecords`). Called once
-	 *  per connect attempt; returned token is sent as `Authorization: Bearer`
-	 *  on the handshake fetch (`mode=ws`) or on the SSE connection via a
-	 *  `?auth=` query param the server doesn't use — browsers can't set
-	 *  headers on EventSource, so for SSE the app should cookie-auth or
-	 *  fall back to `fetchTicket`. */
-	fetchAuthToken?: () => Promise<string>;
 	/** Custom compare. Default: sort by `time_us` descending (newest first),
 	 *  tie-breaking by rkey. */
 	compareRecords?: (a: WatchRecord, b: WatchRecord) => number;
@@ -312,12 +309,11 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	};
 
 	const openWs = async () => {
-		// Step 1: snapshot + handshake. Authenticated by Bearer token from
-		// `fetchAuthToken` (an atproto service-auth JWT — browsers get this
-		// from a same-origin helper that uses the OAuth session). The server
+		// Step 1: snapshot + handshake. Authenticated by the watch-scoped
+		// ticket from `fetchTicket`, passed as `?ticket=...`. The server
 		// returns a ticket bound to (did, spaceUri, querySpec); we pass that
 		// back embedded in the wsUrl on the WS upgrade so the WS itself
-		// doesn't need a JWT (EventSource/WebSocket can't set headers).
+		// doesn't need any other auth.
 		let snapshotUrl = options.url;
 		const sep = snapshotUrl.includes("?") ? "&" : "?";
 		snapshotUrl += `${sep}mode=ws`;
@@ -325,12 +321,7 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 			const ticket = await options.fetchTicket();
 			snapshotUrl += `&ticket=${encodeURIComponent(ticket)}`;
 		}
-		const headers: Record<string, string> = { accept: "application/json" };
-		if (options.fetchAuthToken) {
-			const token = await options.fetchAuthToken();
-			headers.authorization = `Bearer ${token}`;
-		}
-		const res = await fetch(snapshotUrl, { headers });
+		const res = await fetch(snapshotUrl, { headers: { accept: "application/json" } });
 		if (!res.ok) throw new Error(`snapshot fetch failed (${res.status})`);
 		const handshake = (await res.json()) as {
 			transport: "ws";

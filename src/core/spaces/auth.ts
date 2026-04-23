@@ -8,6 +8,7 @@ import {
 } from "@atcute/identity-resolver";
 import type { Did, Nsid } from "@atcute/lexicons";
 import type { SpacesConfig } from "./types";
+import { readInProcess } from "./in-process";
 
 export { ServiceJwtVerifier };
 
@@ -41,38 +42,27 @@ export interface ServiceAuthOptions {
   resolver: DidDocumentResolver;
 }
 
-/** Hono middleware that verifies the Authorization: Bearer <JWT> as an atproto
- *  service-auth token. On success, attaches the decoded claims to c.var.serviceAuth.
- *  Expected Nsid method is taken from the route pattern (last segment after /xrpc/).
+/** Hono middleware that authenticates XRPC requests. Order of precedence:
+ *    1. In-process marker (same-module calls; see `core/spaces/in-process.ts`)
+ *    2. Authorization: Bearer <JWT> as an atproto service-auth token
  *
- *  If `authOverride` is provided and returns non-null claims, the JWT check is
- *  skipped and the override's claims are attached instead — used to paper over
- *  bsky.social's loopback-client restriction on `getServiceAuth` during dev.
- *  The override must be gated in the caller (e.g. an env flag) since it
- *  bypasses cryptographic verification. */
+ *  On success, attaches the claims to `c.var.serviceAuth`. Expected Nsid is
+ *  taken from the route pattern (last segment after `/xrpc/`). */
 export function createServiceAuthMiddleware(
-  verifier: ServiceJwtVerifier,
-  options: {
-    authOverride?: (
-      req: Request
-    ) => Promise<import("./types").AuthOverrideResult | null> | import("./types").AuthOverrideResult | null;
-  } = {}
+  verifier: ServiceJwtVerifier
 ): MiddlewareHandler {
   return async (c, next) => {
     const lxm = extractLxmFromPath(c);
 
-    if (options.authOverride) {
-      const override = await options.authOverride(c.req.raw);
-      if (override) {
-        c.set("serviceAuth", {
-          issuer: override.issuer,
-          audience: override.audience ?? "",
-          lxm: override.lxm ?? lxm ?? undefined,
-          clientId: override.clientId,
-        } satisfies ServiceAuth);
-        await next();
-        return;
-      }
+    const inProcess = readInProcess(c.req.raw);
+    if (inProcess) {
+      c.set("serviceAuth", {
+        issuer: inProcess.did,
+        audience: "",
+        lxm: lxm ?? undefined,
+      } satisfies ServiceAuth);
+      await next();
+      return;
     }
 
     const header = c.req.header("Authorization");
@@ -109,32 +99,21 @@ export function requireServiceAuth(c: Context): ServiceAuth {
   return auth;
 }
 
-/** Verify a request's Authorization: Bearer token out-of-band (e.g. from a
- *  route handler that doesn't always require auth). Returns the claims on
- *  success, or null if missing/invalid.
- *
- *  If `authOverride` is provided and returns claims, the JWT path is skipped
- *  and those claims are returned — same bypass as the middleware-level auth. */
+/** Out-of-band auth check for handlers that don't always require auth.
+ *  Returns claims on success, or null if no valid credentials are present.
+ *  Order of precedence: in-process marker → service-auth JWT. */
 export async function verifyServiceAuthRequest(
   verifier: ServiceJwtVerifier,
   request: Request,
-  lxm?: Nsid | null,
-  options: {
-    authOverride?: (
-      req: Request
-    ) => Promise<import("./types").AuthOverrideResult | null> | import("./types").AuthOverrideResult | null;
-  } = {}
+  lxm?: Nsid | null
 ): Promise<ServiceAuth | null> {
-  if (options.authOverride) {
-    const override = await options.authOverride(request);
-    if (override) {
-      return {
-        issuer: override.issuer,
-        audience: override.audience ?? "",
-        lxm: override.lxm ?? lxm ?? undefined,
-        clientId: override.clientId,
-      };
-    }
+  const inProcess = readInProcess(request);
+  if (inProcess) {
+    return {
+      issuer: inProcess.did,
+      audience: "",
+      lxm: lxm ?? undefined,
+    };
   }
 
   const header = request.headers.get("Authorization");

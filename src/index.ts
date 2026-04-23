@@ -35,7 +35,6 @@ export type {
   SpacesConfig,
   AppPolicy,
   AppPolicyMode,
-  AuthOverrideResult,
   SpaceRow,
   SpaceMemberRow,
   StoredRecord,

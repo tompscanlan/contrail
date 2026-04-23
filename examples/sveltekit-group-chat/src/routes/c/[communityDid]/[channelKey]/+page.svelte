@@ -2,7 +2,7 @@
 	import { tick } from 'svelte';
 	import { Button, Input, Navbar } from '@foxui/core';
 	import { RelativeTime } from '@foxui/time';
-	import { postMessage } from '$lib/rooms/rooms.remote';
+	import { postMessage, mintWatchTicketCmd } from '$lib/rooms/rooms.remote';
 	import { setCurrentChannel } from '$lib/rooms/realtime.svelte';
 	import { markLastRead } from '$lib/rooms/unread.svelte';
 	import { displayName } from '$lib/rooms/profiles.svelte';
@@ -10,6 +10,8 @@
 	import type { WatchRecord } from '@atmo-dev/contrail/sync';
 	import { dev } from '$app/environment';
 	import { setConnectionStatus, resetConnectionStatus } from '$lib/rooms/connection.svelte';
+
+	const WATCH_RECORDS_NSID = 'tools.atmo.chat.message.watchRecords';
 
 	let { data } = $props();
 
@@ -32,21 +34,26 @@
 		if (uri === currentUri) return;
 		query?.stop();
 		currentUri = uri;
+
+		// First connect reuses the ticket minted during SSR (landed on page
+		// data). Reconnects mint a fresh one via the remote function.
+		let pending: string | null = data.initialTicket;
 		query = createWatchQuery({
-			url: `/xrpc/tools.atmo.chat.message.watchRecords?spaceUri=${encodeURIComponent(uri)}&limit=50`,
+			url: `/xrpc/${WATCH_RECORDS_NSID}?spaceUri=${encodeURIComponent(uri)}&limit=50`,
 			transport: dev ? 'sse' : 'ws',
-			fetchAuthToken: dev
-				? undefined
-				: async () => {
-						const res = await fetch('/api/watch-token', {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ lxm: 'tools.atmo.chat.message.watchRecords' })
-						});
-						if (!res.ok) throw new Error(`watch-token mint failed: ${res.status}`);
-						const d = (await res.json()) as { token: string };
-						return d.token;
-					},
+			fetchTicket: async () => {
+				if (pending) {
+					const t = pending;
+					pending = null;
+					return t;
+				}
+				const res = await mintWatchTicketCmd({
+					spaceUri: uri,
+					watchRecordsNsid: WATCH_RECORDS_NSID,
+					limit: 50
+				});
+				return res.ticket;
+			},
 			compareRecords: (a: WatchRecord, b: WatchRecord) =>
 				(a.time_us ?? 0) - (b.time_us ?? 0)
 		});

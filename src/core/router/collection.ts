@@ -446,9 +446,7 @@ export function registerCollectionRoutes(
     }
 
     const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
-    const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid, {
-      authOverride: config.spaces?.authOverride,
-    });
+    const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
     if (!auth) {
       return c.json(
         { error: "AuthRequired", message: "spaceUri requires a valid service-auth JWT or read-grant invite token" },
@@ -497,17 +495,13 @@ export function registerCollectionRoutes(
           }
         }
 
-        // Union path: when Authorization is present (or the dev-mode override
-        // can supply claims without one), verify and fold in records from
-        // spaces the caller is a member of.
+        // Union path: when the caller is authenticated, fold in records from
+        // spaces they're a member of. Anonymous callers just get public results.
         let spaceUris: string[] | undefined;
         const hasAuthHeader = !!c.req.header("Authorization");
-        const hasOverride = !!config.spaces?.authOverride;
-        if (spacesCtx && (hasAuthHeader || hasOverride)) {
+        if (spacesCtx) {
           const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
-          const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid, {
-            authOverride: config.spaces?.authOverride,
-          });
+          const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
           if (auth) {
             const { spaces } = await spacesCtx.adapter.listSpaces({
               memberDid: auth.issuer,

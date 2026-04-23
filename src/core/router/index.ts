@@ -122,14 +122,12 @@ export function createApp(
     : null;
   registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx, communityAdapterForSpaces);
 
-  const authOverride = config.spaces?.authOverride;
-
   if (config.community && spacesCtx) {
     // Community routes reuse the spaces service-auth middleware (same JWT verifier).
     const authMiddleware =
       options.community?.authMiddleware ??
       options.spaces?.authMiddleware ??
-      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
+      createServiceAuthMiddleware(spacesCtx.verifier);
     registerCommunityRoutes(
       app,
       spacesDb,
@@ -144,7 +142,7 @@ export function createApp(
     // space ownership (user-owned → addMember; community-owned → grant).
     const authMiddleware =
       options.spaces?.authMiddleware ??
-      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
+      createServiceAuthMiddleware(spacesCtx.verifier);
     const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
     registerInviteRoutes(app, config, spacesCtx.adapter, communityAdapter, { authMiddleware });
   }
@@ -157,7 +155,7 @@ export function createApp(
     const authMiddleware = spacesCtx
       ? options.realtime?.authMiddleware ??
         options.spaces?.authMiddleware ??
-        createServiceAuthMiddleware(spacesCtx.verifier, { authOverride })
+        createServiceAuthMiddleware(spacesCtx.verifier)
       : null;
     const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
     registerRealtimeRoutes(app, config, spacesCtx?.adapter ?? null, communityAdapter, {

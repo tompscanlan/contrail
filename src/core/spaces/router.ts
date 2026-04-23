@@ -45,11 +45,7 @@ export function registerSpacesRoutes(
 
   const adapter = options.adapter ?? ctx?.adapter ?? new HostedAdapter(db, config);
   const verifier = ctx?.verifier ?? buildVerifier(spacesConfig);
-  const auth =
-    options.authMiddleware ??
-    createServiceAuthMiddleware(verifier, {
-      authOverride: spacesConfig.authOverride,
-    });
+  const auth = options.authMiddleware ?? createServiceAuthMiddleware(verifier);
 
   /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
    *  present so anonymous bearer reads don't 401 before the route handler can

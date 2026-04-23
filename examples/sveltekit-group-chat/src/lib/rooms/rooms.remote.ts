@@ -11,6 +11,7 @@ import {
 	communityPutRecord,
 	grantAccess,
 	mintCommunity,
+	mintWatchTicket,
 	spacePutRecord,
 	revokeAccess,
 	setAccessLevel,
@@ -176,6 +177,22 @@ export const postMessage = command(PostMessageInput, async (input) => {
 		}
 	});
 	return res;
+});
+
+// ---------------------------------------------------------------------------
+// mintWatchTicket — browser calls on reconnect to get a fresh watch-scoped
+// ticket. The initial ticket is pre-minted in +page.server.ts.
+// ---------------------------------------------------------------------------
+
+const MintWatchTicketInput = v.object({
+	spaceUri: v.pipe(v.string(), v.minLength(1)),
+	watchRecordsNsid: v.pipe(v.string(), v.minLength(1)),
+	limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(200)))
+});
+
+export const mintWatchTicketCmd = command(MintWatchTicketInput, async (input) => {
+	const ctx = requireAuthed();
+	return mintWatchTicket(ctx, input);
 });
 
 // ---------------------------------------------------------------------------

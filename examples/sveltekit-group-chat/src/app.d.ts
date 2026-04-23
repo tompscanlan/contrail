@@ -28,7 +28,6 @@ declare global {
 				COMMUNITY_MASTER_KEY: string;
 				REALTIME_TICKET_SECRET: string;
 				SERVICE_DID: string;
-				DEV_AUTH?: string;
 				REALTIME: DurableObjectNamespace;
 				BLOBS?: R2Bucket;
 			};
