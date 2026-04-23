@@ -37,6 +37,10 @@
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"
     },
+    "./sync/cache-idb": {
+      "types": "./dist/sync/cache-idb.d.ts",
+      "import": "./dist/sync/cache-idb.js"
+    },
     "./lexicon-templates/*.json": "./lexicon-templates/*.json"
   },
   "repository": {

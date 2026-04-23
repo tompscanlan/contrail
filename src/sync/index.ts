@@ -23,6 +23,12 @@ export interface WatchRecord {
 	cid?: string | null;
 	/** Set when the record originates from a per-space table. */
 	_space?: string;
+	/** Present on optimistic entries added via `addOptimistic` — not set by
+	 *  records arriving from the stream. Auto-dropped when a real record
+	 *  with the same rkey arrives via `record.created`. */
+	optimistic?: "pending" | "failed";
+	/** Error attached via `markFailed` after a failed mutation. */
+	optimisticError?: Error;
 	/** Additional hydrated relations / references populated server-side. */
 	[k: string]: unknown;
 }
@@ -33,26 +39,49 @@ export interface WatchStoreOptions {
 	/** Transport. Default: 'sse'. Use 'ws' on Cloudflare for DO-terminated
 	 *  long-lived subscriptions that hibernate while idle. */
 	transport?: "sse" | "ws";
-	/** Mint a watch-scoped ticket to auth the connection. Called once per
-	 *  connect attempt; the returned ticket is sent as `?ticket=...` on the
-	 *  SSE connection or on the `mode=ws` handshake fetch. Omit for public
-	 *  (no-auth) endpoints.
+	/** Watch-scoped ticket auth for the connection. Sent as `?ticket=...`
+	 *  on the SSE connection or on the `mode=ws` handshake fetch.
+	 *
+	 *    - `string` — used as-is on every connect (good for one-shot SSR-minted
+	 *      tokens; reconnects after expiry will surface a 401).
+	 *    - `() => Promise<string>` — called once per connect attempt; a fresh
+	 *      ticket is minted for every (re)connect.
+	 *    - omitted — public (no-auth) endpoints.
 	 *
 	 *  For atproto-based services, tickets are typically minted server-side
 	 *  via `<ns>.realtime.ticket` (or via an app-specific route that runs
 	 *  the `mode=ws` handshake in-process and returns the signed ticket). */
-	fetchTicket?: () => Promise<string>;
+	mintTicket?: string | (() => Promise<string>);
 	/** Custom compare. Default: sort by `time_us` descending (newest first),
 	 *  tie-breaking by rkey. */
 	compareRecords?: (a: WatchRecord, b: WatchRecord) => number;
 	/** Reconnect on error with backoff. Default: true, 1s → 30s exponential. */
 	reconnect?: boolean;
+	/** Optional persistent cache. When provided, the store loads cached
+	 *  records at `start()` for instant first paint, then reconciles against
+	 *  the live snapshot as usual. Writes are debounced and exclude
+	 *  optimistic entries. */
+	cache?: WatchCache;
+	/** Key for this query in the cache. Defaults to `url`. */
+	cacheKey?: string;
+	/** Max records retained in the cache per key. Excess records (by sort
+	 *  order) are dropped on write. Default: 200. */
+	cacheMaxRecords?: number;
 	/** Optional logger for debug output. */
 	logger?: {
 		log?: (...args: unknown[]) => void;
 		warn?: (...args: unknown[]) => void;
 		error?: (...args: unknown[]) => void;
 	};
+}
+
+/** Adapter interface for persisting the last-seen records of a watch query.
+ *  Implementations can back this with IndexedDB, localStorage, fs, etc.
+ *  Errors should be caught internally — caching is a best-effort optimization
+ *  and must never break the live stream. */
+export interface WatchCache {
+	read(key: string): Promise<WatchRecord[] | null>;
+	write(key: string, records: WatchRecord[]): Promise<void>;
 }
 
 export type WatchStoreStatus =
@@ -73,6 +102,24 @@ export interface WatchStore {
 	start(): void;
 	/** Close the connection and clear the store. */
 	stop(): void;
+
+	/** Insert an optimistic record immediately, before the server confirms.
+	 *  The entry is merged into `.records` with `optimistic: 'pending'`. When
+	 *  a real record arrives via the stream with the same `rkey`, the
+	 *  optimistic entry is dropped automatically. */
+	addOptimistic(input: {
+		rkey: string;
+		did: string;
+		collection?: string;
+		record: Record<string, unknown>;
+		time_us?: number;
+		uri?: string;
+	}): void;
+	/** Flip an optimistic entry to `optimistic: 'failed'` and attach an error.
+	 *  No-op if no optimistic entry matches. */
+	markFailed(rkey: string, err: Error): void;
+	/** Remove an optimistic entry (explicit rollback). */
+	removeOptimistic(rkey: string): void;
 }
 
 export interface WatchStoreState {
@@ -95,12 +142,44 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	const reconnect = options.reconnect !== false;
 	const transport = options.transport ?? "sse";
 	const log = options.logger ?? {};
+	const cache = options.cache ?? null;
+	const cacheKey = options.cacheKey ?? options.url;
+	const cacheMax = options.cacheMaxRecords ?? 200;
 
 	const byKey = new Map<string, WatchRecord>();
+	/** Optimistic entries keyed by rkey. Merged into `.records`; dropped when
+	 *  a real record with the same rkey arrives via `record.created`. */
+	const optimisticByRkey = new Map<string, WatchRecord>();
 	let sorted: WatchRecord[] = [];
 	let status: WatchStoreStatus = "idle";
 	let error: Error | null = null;
 	const listeners = new Set<(state: WatchStoreState) => void>();
+
+	// Debounced cache writer. Schedules one write after the current burst of
+	// state changes settles, to avoid writing on every incoming event.
+	let cacheWriteTimer: ReturnType<typeof setTimeout> | null = null;
+	const scheduleCacheWrite = () => {
+		if (!cache) return;
+		if (cacheWriteTimer) return;
+		cacheWriteTimer = setTimeout(() => {
+			cacheWriteTimer = null;
+			void flushCache();
+		}, 200);
+	};
+	const flushCache = async () => {
+		if (!cache) return;
+		// Snapshot the current server-confirmed records (exclude optimistic)
+		// and trim to cacheMax.
+		const confirmed: WatchRecord[] = [];
+		for (const r of byKey.values()) confirmed.push(r);
+		confirmed.sort(compare);
+		const trimmed = confirmed.slice(0, cacheMax);
+		try {
+			await cache.write(cacheKey, trimmed);
+		} catch (err) {
+			log.warn?.("cache write failed", err);
+		}
+	};
 
 	// Per-snapshot reconcile: during a snapshot we track which keys were
 	// included, and on snapshot.end we evict any stale keys the previous
@@ -119,10 +198,14 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	const notify = () => {
 		const s = stateSnapshot();
 		for (const l of listeners) l(s);
+		scheduleCacheWrite();
 	};
 
 	const resort = () => {
-		sorted = Array.from(byKey.values()).sort(compare);
+		const merged: WatchRecord[] = [];
+		for (const r of byKey.values()) merged.push(r);
+		for (const r of optimisticByRkey.values()) merged.push(r);
+		sorted = merged.sort(compare);
 	};
 
 	const setStatus = (next: WatchStoreStatus, nextError: Error | null = null) => {
@@ -141,9 +224,14 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 		const k = key(record);
 		byKey.set(k, record);
 		snapshotSeen?.add(k);
+		// If this rkey was optimistic, it's now server-confirmed.
+		optimisticByRkey.delete(record.rkey);
 	};
 
 	const applyCreated = (record: WatchRecord) => {
+		// Drop any optimistic entry with the same rkey — the server-confirmed
+		// record replaces it.
+		optimisticByRkey.delete(record.rkey);
 		byKey.set(key(record), record);
 		resort();
 		notify();
@@ -270,10 +358,16 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 		}
 	};
 
+	const resolveTicket = async (): Promise<string | null> => {
+		const src = options.mintTicket;
+		if (!src) return null;
+		return typeof src === "string" ? src : await src();
+	};
+
 	const openSse = async () => {
 		let url = options.url;
-		if (options.fetchTicket) {
-			const ticket = await options.fetchTicket();
+		const ticket = await resolveTicket();
+		if (ticket) {
 			const sep = url.includes("?") ? "&" : "?";
 			url += `${sep}ticket=${encodeURIComponent(ticket)}`;
 		}
@@ -310,15 +404,15 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 
 	const openWs = async () => {
 		// Step 1: snapshot + handshake. Authenticated by the watch-scoped
-		// ticket from `fetchTicket`, passed as `?ticket=...`. The server
+		// ticket from `mintTicket`, passed as `?ticket=...`. The server
 		// returns a ticket bound to (did, spaceUri, querySpec); we pass that
 		// back embedded in the wsUrl on the WS upgrade so the WS itself
 		// doesn't need any other auth.
 		let snapshotUrl = options.url;
 		const sep = snapshotUrl.includes("?") ? "&" : "?";
 		snapshotUrl += `${sep}mode=ws`;
-		if (options.fetchTicket) {
-			const ticket = await options.fetchTicket();
+		const ticket = await resolveTicket();
+		if (ticket) {
 			snapshotUrl += `&ticket=${encodeURIComponent(ticket)}`;
 		}
 		const res = await fetch(snapshotUrl, { headers: { accept: "application/json" } });
@@ -428,14 +522,72 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 			if (started) return;
 			started = true;
 			stopped = false;
-			void openOnce();
+			void (async () => {
+				// Cache warm: populate from disk before opening the connection
+				// so listeners see instant records on first paint.
+				if (cache) {
+					try {
+						const cached = await cache.read(cacheKey);
+						if (cached && cached.length > 0 && !stopped) {
+							for (const r of cached) byKey.set(key(r), r);
+							resort();
+							notify();
+						}
+					} catch (err) {
+						log.warn?.("cache read failed", err);
+					}
+				}
+				if (stopped) return;
+				void openOnce();
+			})();
 		},
 		stop() {
 			stopped = true;
 			closeConnections();
+			if (cacheWriteTimer) {
+				clearTimeout(cacheWriteTimer);
+				cacheWriteTimer = null;
+			}
+			// Best-effort final flush so the cache reflects the last-known
+			// confirmed state before teardown.
+			void flushCache();
 			byKey.clear();
+			optimisticByRkey.clear();
 			sorted = [];
 			setStatus("closed");
+		},
+		addOptimistic(input) {
+			const now = Date.now();
+			const record: WatchRecord = {
+				uri: input.uri ?? `at://${input.did}/${input.collection ?? ""}/${input.rkey}`,
+				did: input.did,
+				rkey: input.rkey,
+				collection: input.collection ?? "",
+				record: input.record,
+				time_us: input.time_us ?? now * 1000,
+				indexed_at: now,
+				cid: null,
+				optimistic: "pending"
+			};
+			optimisticByRkey.set(input.rkey, record);
+			resort();
+			notify();
+		},
+		markFailed(rkey, err) {
+			const existing = optimisticByRkey.get(rkey);
+			if (!existing) return;
+			optimisticByRkey.set(rkey, {
+				...existing,
+				optimistic: "failed",
+				optimisticError: err
+			});
+			resort();
+			notify();
+		},
+		removeOptimistic(rkey) {
+			if (!optimisticByRkey.delete(rkey)) return;
+			resort();
+			notify();
 		}
 	};
 }

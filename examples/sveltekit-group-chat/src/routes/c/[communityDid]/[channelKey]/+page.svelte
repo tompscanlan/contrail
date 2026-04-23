@@ -2,71 +2,30 @@
 	import { tick } from 'svelte';
 	import { Button, Input, Navbar } from '@foxui/core';
 	import { RelativeTime } from '@foxui/time';
-	import { postMessage, mintWatchTicketCmd } from '$lib/rooms/rooms.remote';
+	import { postMessage } from '$lib/rooms/rooms.remote';
 	import { setCurrentChannel } from '$lib/rooms/realtime.svelte';
 	import { markLastRead } from '$lib/rooms/unread.svelte';
 	import { displayName } from '$lib/rooms/profiles.svelte';
 	import { createWatchQuery } from '$lib/rooms/watch.svelte';
-	import type { WatchRecord } from '@atmo-dev/contrail/sync';
-	import { dev } from '$app/environment';
 	import { setConnectionStatus, resetConnectionStatus } from '$lib/rooms/connection.svelte';
-
-	const WATCH_RECORDS_NSID = 'tools.atmo.chat.message.watchRecords';
+	import { nextTid } from '@atmo-dev/contrail';
 
 	let { data } = $props();
 
 	let channel = $derived(data.channels.find((c) => c.key === data.channelKey));
 	let channelName = $derived(channel?.name ?? data.channelKey);
 
-	// Live message feed via contrail's watchRecords subscription. The engine
-	// handles the snapshot + live merge; we just render its `records` array.
-	// Sorted newest-first by default — flip to oldest-first for chat.
-	//
-	// The query is keyed strictly on spaceUri — recreating it on every
-	// `data` identity change would tear down and rebuild the subscription on
-	// unrelated page-data invalidations (e.g. channel list refresh), flashing
-	// "Loading…" each time. Using a keyed effect here avoids that.
-	let query = $state<ReturnType<typeof createWatchQuery> | null>(null);
-	let currentUri: string | null = null;
-
-	$effect(() => {
-		const uri = data.spaceUri;
-		if (uri === currentUri) return;
-		query?.stop();
-		currentUri = uri;
-
-		// First connect reuses the ticket minted during SSR (landed on page
-		// data). Reconnects mint a fresh one via the remote function.
-		let pending: string | null = data.initialTicket;
-		query = createWatchQuery({
-			url: `/xrpc/${WATCH_RECORDS_NSID}?spaceUri=${encodeURIComponent(uri)}&limit=50`,
-			transport: dev ? 'sse' : 'ws',
-			fetchTicket: async () => {
-				if (pending) {
-					const t = pending;
-					pending = null;
-					return t;
-				}
-				const res = await mintWatchTicketCmd({
-					spaceUri: uri,
-					watchRecordsNsid: WATCH_RECORDS_NSID,
-					limit: 50
-				});
-				return res.ticket;
-			},
-			compareRecords: (a: WatchRecord, b: WatchRecord) =>
-				(a.time_us ?? 0) - (b.time_us ?? 0)
-		});
-	});
-
-	// Final teardown on component unmount.
-	$effect(() => {
-		return () => {
-			query?.stop();
-			query = null;
-			currentUri = null;
-		};
-	});
+	// Live message feed. `$derived` recreates the query when spaceUri changes;
+	// the old instance is auto-torn down via `createSubscriber` once no
+	// component reads it. Initial ticket is pre-minted during SSR to save one
+	// roundtrip; reconnects call the configured ticket minter transparently.
+	let messagesQuery = $derived(
+		createWatchQuery({
+			endpoint: 'tools.atmo.chat.message',
+			params: { spaceUri: data.spaceUri, limit: 50 },
+			compare: (a, b) => (a.time_us ?? 0) - (b.time_us ?? 0)
+		})
+	);
 
 	// Unread / current-channel bookkeeping.
 	$effect(() => {
@@ -78,22 +37,21 @@
 	// Mirror the query's connection status into the shared store so the
 	// layout's navbar can render a dot for it.
 	$effect(() => {
-		if (query) setConnectionStatus(query.status);
+		setConnectionStatus(messagesQuery.status);
 		return () => resetConnectionStatus();
 	});
 
-	// Project records to the shape the existing template expects.
 	let messages = $derived(
-		(query?.records ?? []).map((r) => {
-			const rec = r.record as { text?: string; createdAt?: string; replyTo?: string };
-			return {
-				rkey: r.rkey,
-				authorDid: r.did,
-				text: rec.text ?? '',
-				createdAt: rec.createdAt ?? '',
-				replyTo: rec.replyTo
-			};
-		})
+		messagesQuery.records.map((r) => ({
+			rkey: r.rkey,
+			authorDid: r.did,
+			text: r.record.text ?? '',
+			createdAt: r.record.createdAt ?? '',
+			replyTo: r.record.replyTo,
+			pending: r.optimistic === 'pending',
+			failed: r.optimistic === 'failed',
+			error: r.optimisticError
+		}))
 	);
 
 	let scrollEl: HTMLDivElement | null = $state(null);
@@ -114,11 +72,26 @@
 		if (!t) return;
 		sending = true;
 		sendErr = null;
+		// Client-generated rkey lets the optimistic entry reconcile with the
+		// stream's record.created event by identity.
+		const rkey = nextTid();
+		messagesQuery.addOptimistic({
+			rkey,
+			did: data.myDid,
+			record: {
+				$type: 'tools.atmo.chat.message',
+				text: t,
+				createdAt: new Date().toISOString()
+			}
+		});
+		text = '';
 		try {
-			await postMessage({ spaceUri: data.spaceUri, text: t });
-			text = '';
+			await postMessage({ spaceUri: data.spaceUri, rkey, text: t });
+			// Success: leave the optimistic entry — the stream will replace it.
 		} catch (err) {
-			sendErr = err instanceof Error ? err.message : String(err);
+			const e = err instanceof Error ? err : new Error(String(err));
+			messagesQuery.markFailed(rkey, e);
+			sendErr = e.message;
 		} finally {
 			sending = false;
 		}
@@ -132,8 +105,20 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col pb-20">
+	{#if messages.length > 0 && (messagesQuery.status === 'connecting' || messagesQuery.status === 'snapshot')}
+		<div
+			class="text-base-500 absolute top-[4.5rem] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-white/80 px-3 py-1 text-xs shadow-sm backdrop-blur dark:bg-black/80"
+			aria-label="updating"
+		>
+			<svg class="size-3 animate-spin" viewBox="0 0 24 24" fill="none">
+				<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="4" />
+				<path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+			</svg>
+			updating
+		</div>
+	{/if}
 	<div bind:this={scrollEl} class="flex-1 overflow-y-auto px-4 py-6">
-		{#if messages.length === 0 && (query?.status === 'connecting' || query?.status === 'snapshot' || query?.status === 'idle')}
+		{#if messages.length === 0 && (messagesQuery.status === 'connecting' || messagesQuery.status === 'snapshot' || messagesQuery.status === 'idle')}
 			<div class="text-base-500 text-center text-sm">Loading…</div>
 		{:else if messages.length === 0}
 			<div class="text-base-500 text-center text-sm">No messages yet. Say hi.</div>
@@ -147,11 +132,18 @@
 							<span class="font-medium">{displayName(m.authorDid)}</span>
 							·
 							<RelativeTime date={new Date(m.createdAt)} locale="en-US" />
+							{#if m.pending}
+								· <span class="text-base-400">sending…</span>
+							{:else if m.failed}
+								· <span class="text-red-500">failed{m.error ? ` (${m.error.message})` : ''}</span>
+							{/if}
 						</div>
 						<div
 							class="{m.authorDid === data.myDid
 								? 'bg-accent-500 text-white'
-								: 'bg-base-200 dark:bg-base-800'} mt-1 inline-block rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap"
+								: 'bg-base-200 dark:bg-base-800'} mt-1 inline-block rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap {m.pending
+								? 'opacity-60'
+								: ''} {m.failed ? 'opacity-60 ring-1 ring-red-500' : ''}"
 						>
 							{m.text}
 						</div>

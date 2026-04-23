@@ -162,7 +162,10 @@ export const createChannel = command(CreateChannelInput, async (input) => {
 const PostMessageInput = v.object({
 	spaceUri: v.pipe(v.string(), v.minLength(1)),
 	text: v.pipe(v.string(), v.minLength(1), v.maxLength(4000)),
-	replyTo: v.optional(v.pipe(v.string(), v.minLength(1)))
+	replyTo: v.optional(v.pipe(v.string(), v.minLength(1))),
+	/** Optional client-generated rkey — lets the browser match an optimistic
+	 *  record to the stream's `record.created` event by identity. */
+	rkey: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64)))
 });
 
 export const postMessage = command(PostMessageInput, async (input) => {
@@ -170,6 +173,7 @@ export const postMessage = command(PostMessageInput, async (input) => {
 	const res = await spacePutRecord(ctx, {
 		spaceUri: input.spaceUri,
 		collection: 'tools.atmo.chat.message',
+		...(input.rkey ? { rkey: input.rkey } : {}),
 		record: {
 			text: input.text,
 			createdAt: new Date().toISOString(),
