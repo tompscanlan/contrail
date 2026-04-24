@@ -37,7 +37,11 @@
           "type": "object",
           "required": [
             "uri",
-            "value"
+            "value",
+            "did",
+            "collection",
+            "rkey",
+            "time_us"
           ],
           "properties": {
             "uri": {

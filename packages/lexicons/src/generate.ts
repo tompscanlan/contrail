@@ -247,7 +247,15 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         properties[rd.refName] = { type: "ref", ref: `#ref${cap(rd.refName)}Record` };
       }
     }
-    return { type: "object", required: ["uri", "cid", "value"], properties };
+    // Required list is a superset of atproto's `#record` (`uri`, `cid`, `value`).
+    // Contrail always populates the extras too, so including them here gives
+    // contrail-aware clients strong typing without breaking atproto clients
+    // that only check the standard three.
+    return {
+      type: "object",
+      required: ["uri", "cid", "value", "did", "collection", "rkey", "time_us"],
+      properties,
+    };
   }
 
   function buildHydrateDefs(relationDefs: RelationDef[]): Record<string, any> {
@@ -738,7 +746,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       writeLexicon(`${ns}.${shortName}.getRecord`, {
         lexicon: 1, id: `${ns}.${shortName}.getRecord`,
         defs: {
-          main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "value"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
+          main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "value", "did", "collection", "rkey", "time_us"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
           ...hydrateDefs, ...refDefs, ...profileDefs(),
         },
       });

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --test-scheduled",
+    "dev": "contrail dev",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

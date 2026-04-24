@@ -96,7 +96,6 @@ returns every `community.lexicon.calendar.event` record published anywhere on at
 - [Spaces](./docs/05-spaces.md) — permissioned records stored by the appview
 - [Communities](./docs/06-communities.md) — group-controlled atproto DIDs
 - [Sync](./docs/07-sync.md) — reactive client-side store over `watchRecords`
-- [Examples](./docs/08-examples.md) — reference deployments in the repo
 - Frameworks: [SvelteKit + Cloudflare](./docs/frameworks/sveltekit-cloudflare.md)
 
 ## Packages

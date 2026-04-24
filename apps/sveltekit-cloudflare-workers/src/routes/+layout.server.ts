@@ -14,10 +14,11 @@ export const load: LayoutServerLoad = async ({ locals, platform }) => {
 		});
 
 		if (!res.ok) return { did: locals.did, profile: null };
+		const entry = res.data.profiles?.[0];
 
 		return {
 			did: locals.did,
-			profile: extractProfile(res.data)
+			profile: entry ? extractProfile(entry) : null
 		};
 	} catch {
 		return { did: locals.did, profile: null };

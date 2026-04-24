@@ -17,8 +17,8 @@ backfills run via the `contrail` cli from the library (see `package.json` script
 ```bash
 pnpm install
 npx wrangler d1 create contrail          # copy database_id into wrangler.jsonc
-pnpm deploy                              # deploy the worker
 pnpm contrail backfill --remote          # discover + backfill historical events
+pnpm deploy                              # deploy the worker
 ```
 
 then hit:
@@ -30,9 +30,11 @@ GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsA
 ## local dev
 
 ```bash
-pnpm dev                # wrangler dev, cron fires every minute
+pnpm dev                # wraps wrangler dev + auto-fires cron + prompts for backfill/refresh if needed
 pnpm contrail backfill  # backfill against the local D1 created by wrangler
 ```
+
+`pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and prompts to run backfill (if nothing's indexed yet) or refresh (if the ingest cursor is >1h old), then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
 
 ## extending
 

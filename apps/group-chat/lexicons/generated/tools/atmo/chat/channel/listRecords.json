@@ -100,7 +100,11 @@
       "required": [
         "uri",
         "cid",
-        "value"
+        "value",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
       ],
       "properties": {
         "uri": {

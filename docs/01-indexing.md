@@ -97,6 +97,8 @@ async scheduled(_ev, env, ctx) {
 
 `ingest()` connects to Jetstream, streams events since the saved cursor, stops when caught up. Running every minute is fine — the next fire resumes where this one left off. Each cycle is bounded, so it can't blow past the Worker time limit.
 
+**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and prompts you to run backfill or refresh if the local DB looks stale on start.
+
 ### Persistent (node / any long-lived server)
 
 If your runtime can keep a socket open, skip the cron entirely:

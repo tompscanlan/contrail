@@ -33,6 +33,8 @@ export const putRecord = command(
 			}
 		});
 
+		if (!response.ok) error(502, 'putRecord failed');
+
 		// Immediately index the new/updated record in contrail
 		const { platform } = getRequestEvent();
 		const db = platform?.env?.DB;
