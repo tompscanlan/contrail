@@ -10,7 +10,7 @@
     "deploy": "wrangler deploy",
     "clean": "tsx scripts/clean.ts",
     "generate": "tsx src/generate.ts",
-    "generate:pull": "contrail-lex all --config src/config.ts",
+    "generate:pull": "contrail-lex all",
     "publish-lexicons": "tsx scripts/publish-lexicons.ts",
     "typecheck": "tsc --noEmit",
     "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",

@@ -1,6 +1,6 @@
 /**
  * CLI wrapper for `publishLexicons` — publishes contrail's own generated
- * lexicons (under `lexicons-generated/`) to the logged-in account's PDS.
+ * lexicons (under `lexicons/generated/`) to the logged-in account's PDS.
  *
  * Usage:
  *   LEXICON_ACCOUNT_IDENTIFIER=you.bsky.social \
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   }
 
   await publishLexicons({
-    generatedDir: join(ROOT, "lexicons-generated"),
+    generatedDir: join(ROOT, "lexicons", "generated"),
     identifier,
     password,
   });

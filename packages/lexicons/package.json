@@ -46,10 +46,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@atcute/lex-cli": "^2.5.3"
+    "@atcute/lex-cli": "^2.5.3",
+    "@atmo-dev/contrail": "workspace:*"
   },
   "devDependencies": {
-    "@atmo-dev/contrail": "workspace:*",
     "@types/node": "^25.5.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.3",

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * contrail-lex — CLI for generating lexicons from a Contrail config and
- * (optionally) typegenning them via @atcute/lex-cli.
+ * contrail-lex — CLI for generating, typegenning, and publishing lexicons.
  *
  * Usage from a consumer project:
  *
@@ -9,18 +8,24 @@
  *   contrail-lex pull                             # wraps `lex-cli pull`
  *   contrail-lex types                            # wraps `lex-cli generate`
  *   contrail-lex all [--no-types] [--config ...]  # generate → pull → types
+ *   contrail-lex publish [handle] [password]      # publish lexicons to a PDS
  *
- * Looks for a user config via --config <path>, else ./contrail.config.ts,
- * ./app/config.ts, ./src/lib/contrail/config.ts (first match wins). The
- * config file must default-export or named-export `config: ContrailConfig`.
+ * Config auto-detects at ./contrail.config.ts, ./app/config.ts, or
+ * ./src/lib/contrail/config.ts (first match wins); override with --config.
+ * The file must default-export or named-export `config: ContrailConfig`.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import {
+  findConfigFile,
+  loadConfig,
+  CONFIG_CANDIDATES_MESSAGE,
+} from "@atmo-dev/contrail/cli-config";
 import { generateLexicons } from "./generate.js";
+import { publishLexicons } from "./publish.js";
 
-type Subcommand = "generate" | "pull" | "types" | "all" | "help";
+type Subcommand = "generate" | "pull" | "types" | "all" | "publish" | "help";
 
 const USAGE = `contrail-lex <subcommand> [options]
 
@@ -29,14 +34,20 @@ Subcommands:
   pull         Pull external lexicons (wraps \`lex-cli pull\`)
   types        Generate TS types from lexicon JSON (wraps \`lex-cli generate\`)
   all          generate → pull → generate → pull → types (full pipeline)
+  publish      Publish lexicon JSON as com.atproto.lexicon.schema records on a PDS
   help         Print this message
 
 Options:
-  --config <path>   Path to Contrail config file (TS or JS, default export
-                    or named \`config\`). Default: auto-detect.
-  --root <path>     Project root (where lexicons/ and node_modules/ live).
-                    Default: CWD.
-  --no-types        In \`all\`, skip the final type-generation step.
+  --config <path>     Path to Contrail config file. Default: auto-detect.
+  --root <path>       Project root (where lexicons/ and node_modules/ live). Default: CWD.
+  --no-types          In \`all\`, skip the final type-generation step.
+  --generated-dir     For \`publish\`: dir of JSON to publish. Default: lexicons/generated.
+  --skip-confirm      For \`publish\`: skip the "do you control these zones?" prompt.
+  --dry-run           For \`publish\`: print what would be published + the DNS records needed, no writes.
+
+Environment variables (for \`publish\`):
+  LEXICON_ACCOUNT_IDENTIFIER   handle or DID (falls back to positional arg 1)
+  LEXICON_ACCOUNT_PASSWORD     app password   (falls back to positional arg 2)
 `;
 
 function parseArgs(argv: string[]): {
@@ -44,54 +55,35 @@ function parseArgs(argv: string[]): {
   config?: string;
   root: string;
   withTypes: boolean;
+  generatedDir: string;
+  skipConfirm: boolean;
+  dryRun: boolean;
+  positional: string[];
 } {
   const args = argv.slice(2);
   const cmd = (args.shift() ?? "help") as Subcommand;
   let config: string | undefined;
   let root = process.cwd();
   let withTypes = true;
+  let generatedDir = "lexicons/generated";
+  let skipConfirm = false;
+  let dryRun = false;
+  const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--config") config = args[++i];
     else if (a === "--root") root = args[++i];
     else if (a === "--no-types") withTypes = false;
-    else if (a === "-h" || a === "--help") return { cmd: "help", root, withTypes: true };
+    else if (a === "--generated-dir") generatedDir = args[++i];
+    else if (a === "--skip-confirm") skipConfirm = true;
+    else if (a === "--dry-run") dryRun = true;
+    else if (a === "-h" || a === "--help")
+      return { cmd: "help", root, withTypes: true, generatedDir, skipConfirm, dryRun, positional };
+    else positional.push(a);
   }
-  return { cmd, config, root, withTypes };
+  return { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, positional };
 }
 
-function findConfigFile(root: string, explicit?: string): string | null {
-  if (explicit) {
-    const p = resolve(root, explicit);
-    return existsSync(p) ? p : null;
-  }
-  const candidates = [
-    "contrail.config.ts",
-    "contrail.config.js",
-    "app/config.ts",
-    "src/lib/contrail/config.ts",
-  ];
-  for (const c of candidates) {
-    const p = join(root, c);
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-async function loadConfig(path: string): Promise<unknown> {
-  // TS files are loaded via `tsx` if available; otherwise fall back to the
-  // Node loader (works for .js). We use dynamic import.
-  if (path.endsWith(".ts") || path.endsWith(".mts")) {
-    // `tsx` registers a hook when invoked via `tsx <cli.ts>`. If this CLI is
-    // run through tsx (e.g. `npx tsx contrail-lex ...`), the import below
-    // will just work. Otherwise we spawn a tsx child below — but dynamic
-    // import is the preferred path for a programmatic config load.
-    const mod = await import(pathToFileURL(path).href);
-    return mod.config ?? mod.default;
-  }
-  const mod = await import(pathToFileURL(path).href);
-  return mod.config ?? mod.default;
-}
 
 function runLexCli(args: string[], cwd: string): number {
   const result = spawnSync("npx", ["lex-cli", ...args], {
@@ -104,20 +96,55 @@ function runLexCli(args: string[], cwd: string): number {
 
 async function cmdGenerate(configPath: string, root: string): Promise<void> {
   const config = await loadConfig(configPath);
-  if (!config || typeof config !== "object") {
-    throw new Error(`Config at ${configPath} did not export a \`config\` object`);
-  }
   generateLexicons({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    config: config as any,
+    config,
     rootDir: root,
-    outputDir: join(root, "lexicons-generated"),
+    outputDir: join(root, "lexicons", "generated"),
     writeRuntimeFiles: true,
   });
 }
 
+async function cmdPublish(
+  root: string,
+  generatedDir: string,
+  positional: string[],
+  skipConfirm: boolean,
+  dryRun: boolean
+): Promise<number> {
+  const identifier = positional[0] ?? process.env.LEXICON_ACCOUNT_IDENTIFIER;
+  const password = positional[1] ?? process.env.LEXICON_ACCOUNT_PASSWORD;
+  if (!dryRun && (!identifier || !password)) {
+    console.error(
+      "missing credentials. pass positional <handle> <app-password> or set\n" +
+        "LEXICON_ACCOUNT_IDENTIFIER and LEXICON_ACCOUNT_PASSWORD.\n" +
+        "(not required with --dry-run)"
+    );
+    return 1;
+  }
+  const dir = resolve(root, generatedDir);
+  if (!existsSync(dir)) {
+    console.error(`generated lexicons dir not found: ${dir}`);
+    return 1;
+  }
+  const result = await publishLexicons({
+    generatedDir: dir,
+    identifier,
+    password,
+    skipConfirm,
+    dryRun,
+  });
+  if (!dryRun) {
+    console.log(
+      `published ${result.published} lexicon(s)` +
+        (result.failed.length ? `, ${result.failed.length} failed` : "")
+    );
+  }
+  return result.failed.length ? 1 : 0;
+}
+
 async function main(): Promise<number> {
-  const { cmd, config, root, withTypes } = parseArgs(process.argv);
+  const { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, positional } =
+    parseArgs(process.argv);
 
   if (cmd === "help") {
     process.stdout.write(USAGE);
@@ -126,12 +153,14 @@ async function main(): Promise<number> {
 
   if (cmd === "pull") return runLexCli(["pull"], root);
   if (cmd === "types") return runLexCli(["generate"], root);
+  if (cmd === "publish")
+    return cmdPublish(root, generatedDir, positional, skipConfirm, dryRun);
 
   const configPath = findConfigFile(root, config);
   if (!configPath) {
     console.error(
       "Could not find a Contrail config. Pass --config <path> or place one at\n" +
-        "  contrail.config.ts | app/config.ts | src/lib/contrail/config.ts"
+        `  ${CONFIG_CANDIDATES_MESSAGE}`
     );
     return 1;
   }

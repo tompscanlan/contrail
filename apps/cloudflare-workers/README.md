@@ -1,65 +1,43 @@
-# Contrail — Cloudflare Workers Example
+# cloudflare-workers
 
-A complete example of using Contrail to index AT Protocol calendar events and RSVPs on Cloudflare Workers + D1.
+minimal, runnable contrail deployment — cloudflare workers + d1, one collection (`community.lexicon.calendar.event`), no spaces / communities / realtime. mirrors the setup shown in the [root README](../../README.md) exactly.
 
-## Setup
+## layout
+
+```
+src/contrail.config.ts   — shared config (collections, queryables, searchables)
+src/worker.ts            — fetch handler + scheduled ingest
+wrangler.jsonc           — d1 binding + cron
+```
+
+backfills run via the `contrail` cli from the library (see `package.json` scripts) — no script file needed.
+
+## setup
 
 ```bash
-# Copy this folder to a new project
-cp -r examples/cloudflare-workers my-contrail-app
-cd my-contrail-app
-
-# Install dependencies
-npm install
-
-# Create a D1 database
-npx wrangler d1 create contrail
+pnpm install
+npx wrangler d1 create contrail          # copy database_id into wrangler.jsonc
+pnpm deploy                              # deploy the worker
+pnpm contrail backfill --remote          # discover + backfill historical events
 ```
 
-Copy the `database_id` from the output into `wrangler.jsonc`.
+then hit:
 
-> **Note:** The `contrail` dependency installs from GitHub. This may take a minute on first install since it also pulls in the AT Protocol client libraries.
+```
+GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
+```
 
-## Configure
-
-Edit `config.ts` to define your collections, queryable fields, relations, and references. See the [Contrail README](https://github.com/flo-bit/contrail) for all options.
-
-## Develop
+## local dev
 
 ```bash
-# Discover users from relays and backfill their records
-npm run sync
-
-# Start the dev server (ingests from Jetstream every minute)
-npm run dev
+pnpm dev                # wrangler dev, cron fires every minute
+pnpm contrail backfill  # backfill against the local D1 created by wrangler
 ```
 
-Your XRPC API is now available at `http://localhost:8787`:
+## extending
 
-```
-# List events sorted by RSVP count
-/xrpc/rsvp.atmo.event.listRecords?sort=rsvpsCount
-
-# Upcoming events with 10+ going RSVPs
-/xrpc/rsvp.atmo.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10
-
-# Single event with hydrated RSVPs and profiles
-/xrpc/rsvp.atmo.event.getRecord?uri=at://...&hydrateRsvps=10&profiles=true
-
-# Search events
-/xrpc/rsvp.atmo.event.listRecords?search=meetup
-
-# RSVPs for a specific event
-/xrpc/rsvp.atmo.rsvp.listRecords?subjectUri=at://...
-```
-
-## Deploy
-
-```bash
-npm run deploy
-
-# Sync against production D1
-npm run sync:remote
-```
-
-Ingestion runs automatically via cron (`*/1 * * * *`).
+- **add a collection:** append to `collections` in `src/contrail.config.ts`; redeploy; `pnpm contrail backfill --remote` to backfill the new one.
+- **add full-text search:** `searchable: ["field1", "field2"]`, redeploy, no backfill needed (fts indexes repopulate on ingest).
+- **add relations / references:** see [indexing docs](../../docs/01-indexing.md).
+- **private records:** see [spaces docs](../../docs/03-spaces.md).
+- **group-controlled DIDs:** see [communities docs](../../docs/04-communities.md).

@@ -13,8 +13,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const targets = [
   ".wrangler",
   "lex.config.js",
-  "lexicons-pulled",
-  "lexicons-generated",
+  "lexicons/pulled",
+  "lexicons/generated",
   "src/lexicon-types",
 ];
 

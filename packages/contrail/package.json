@@ -26,7 +26,18 @@
     "./postgres": {
       "types": "./dist/adapters/postgres.d.ts",
       "import": "./dist/adapters/postgres.js"
+    },
+    "./workers": {
+      "types": "./dist/workers/backfill.d.ts",
+      "import": "./dist/workers/backfill.js"
+    },
+    "./cli-config": {
+      "types": "./dist/cli-config.d.ts",
+      "import": "./dist/cli-config.js"
     }
+  },
+  "bin": {
+    "contrail": "./dist/cli.js"
   },
   "repository": {
     "type": "git",
@@ -57,7 +68,8 @@
     "@atcute/jetstream": "^1.0.2",
     "@atcute/lexicons": "^1.2.9",
     "@atcute/xrpc-server": "^0.1.12",
-    "hono": "^4.12.8"
+    "hono": "^4.12.8",
+    "jiti": "^2.4.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250124.0",
@@ -66,13 +78,18 @@
     "pg": "^8.20.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.63.0"
   },
   "peerDependencies": {
-    "pg": "^8.0.0"
+    "pg": "^8.0.0",
+    "wrangler": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "pg": {
+      "optional": true
+    },
+    "wrangler": {
       "optional": true
     }
   },

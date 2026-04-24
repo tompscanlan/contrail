@@ -332,6 +332,9 @@ export async function saveCursor(
 export interface ExistingRecordInfo {
   cid: string | null;
   record: string | null;
+  /** When the row was last written to our DB (microseconds). Populated
+   *  whenever `lookupExistingRecords` runs, regardless of `includeRecord`. */
+  indexed_at: number | null;
 }
 
 /**
@@ -358,7 +361,7 @@ export async function lookupExistingRecords(
     byShort.set(short, uris);
   }
 
-  const selectCols = includeRecord ? "uri, cid, record" : "uri, cid";
+  const selectCols = includeRecord ? "uri, cid, record, indexed_at" : "uri, cid, indexed_at";
   for (const [short, uris] of byShort) {
     const table = recordsTableName(short);
     for (let i = 0; i < uris.length; i += 50) {
@@ -367,11 +370,17 @@ export async function lookupExistingRecords(
       const rows = await db
         .prepare(`SELECT ${selectCols} FROM ${table} WHERE uri IN (${placeholders})`)
         .bind(...chunk)
-        .all<{ uri: string; cid: string | null; record?: string | null }>();
+        .all<{
+          uri: string;
+          cid: string | null;
+          record?: string | null;
+          indexed_at: number | null;
+        }>();
       for (const row of rows.results ?? []) {
         result.set(row.uri, {
           cid: row.cid,
           record: includeRecord ? (row.record ?? null) : null,
+          indexed_at: row.indexed_at ?? null,
         });
       }
     }

@@ -104,8 +104,8 @@ await contrail.discover();
 // Backfill their records from PDS
 await contrail.backfill({ concurrency: 100 });
 
-// Or both in one call
-await contrail.sync({ concurrency: 100 });
+// Or both in one call — logs progress via config.logger
+await contrail.backfillAll({ concurrency: 100 });
 ```
 
 ### Notify of immediate updates

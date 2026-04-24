@@ -10,7 +10,7 @@
 import pg from "pg";
 import { Contrail } from "@atmo-dev/contrail";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
-import { config } from "./config";
+import { config } from "./contrail.config";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??

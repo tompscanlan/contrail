@@ -1,6 +1,6 @@
 import { Contrail } from "@atmo-dev/contrail";
 import { createHandler } from "@atmo-dev/contrail/server";
-import { config } from "./config";
+import { config } from "./contrail.config";
 
 const contrail = new Contrail(config);
 const handle = createHandler(contrail);

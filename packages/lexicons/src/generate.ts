@@ -123,8 +123,8 @@ interface ReferenceDef {
 export function generateLexicons(options: GenerateOptions): Record<string, object> {
   const { config, rootDir, outputDir, quiet } = options;
   const lexiconDirs = options.lexiconDirs ?? [
-    join(rootDir, "lexicons"),
-    join(rootDir, "lexicons-pulled"),
+    join(rootDir, "lexicons", "custom"),
+    join(rootDir, "lexicons", "pulled"),
   ];
 
   const log = quiet ? () => {} : console.log;
@@ -1035,7 +1035,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       if (!ref.startsWith("com.atproto.")) pullNsids.add(ref);
     }
     const sortedNsids = [...pullNsids].sort();
-    const lexConfigContent = `import { defineLexiconConfig } from "@atcute/lex-cli";\n\nexport default defineLexiconConfig({\n  files: ["lexicons/**/*.json", "lexicons-pulled/**/*.json", "lexicons-generated/**/*.json"],\n  outdir: "src/lexicon-types/",\n  imports: ["@atcute/atproto"],\n  pull: {\n    outdir: "lexicons-pulled/",\n    sources: [\n      {\n        type: "atproto",\n        mode: "nsids",\n        nsids: ${JSON.stringify(sortedNsids, null, 10).replace(/^/gm, "        ").trim()},\n      },\n    ],\n  },\n});\n`;
+    const lexConfigContent = `import { defineLexiconConfig } from "@atcute/lex-cli";\n\nexport default defineLexiconConfig({\n  files: ["lexicons/custom/**/*.json", "lexicons/pulled/**/*.json", "lexicons/generated/**/*.json"],\n  outdir: "src/lexicon-types/",\n  imports: ["@atcute/atproto"],\n  pull: {\n    outdir: "lexicons/pulled/",\n    sources: [\n      {\n        type: "atproto",\n        mode: "nsids",\n        nsids: ${JSON.stringify(sortedNsids, null, 10).replace(/^/gm, "        ").trim()},\n      },\n    ],\n  },\n});\n`;
     writeFileSync(join(rootDir, "lex.config.js"), lexConfigContent);
     log(`\nGenerated lex.config.js with ${sortedNsids.length} pull NSIDs`);
 

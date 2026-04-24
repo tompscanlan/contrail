@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "rsvp.atmo.community.invite.redeem",
+  "id": "rsvp.atmo.invite.redeem",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Redeem a community invite. The caller's DID (from service-auth) is granted the access level encoded in the invite. Atomic — a token is consumed only if the invite is currently usable.",
+      "description": "Redeem an invite token. User-owned spaces: caller becomes a member. Community-owned spaces: caller is granted the invite's access level.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -24,32 +24,32 @@
         "schema": {
           "type": "object",
           "required": [
-            "spaceUri",
-            "accessLevel",
-            "communityDid"
+            "spaceUri"
           ],
           "properties": {
             "spaceUri": {
               "type": "string",
               "format": "at-uri"
             },
+            "kind": {
+              "type": "string",
+              "description": "Set for user-owned spaces — echoes the invite kind consumed."
+            },
             "accessLevel": {
-              "type": "ref",
-              "ref": "rsvp.atmo.community.defs#accessLevel"
+              "type": "string",
+              "description": "Set for community-owned spaces — the level granted."
             },
             "communityDid": {
               "type": "string",
-              "format": "did"
+              "format": "did",
+              "description": "Set for community-owned spaces."
             }
           }
         }
       },
       "errors": [
         {
-          "name": "InvalidRequest"
-        },
-        {
-          "name": "InvalidToken"
+          "name": "InvalidInvite"
         },
         {
           "name": "NotFound"
