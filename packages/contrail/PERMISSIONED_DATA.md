@@ -16,7 +16,7 @@ Contrail's spaces feature is the middle path: a **centralized, auth-gated store*
 
 - Each space has one owner (DID), one type (classifying NSID), one key (string). Identified by an at-uri: `at://<owner>/<type>/<key>`.
 - A space holds records of *any* NSID. Same role a PDS repo plays, scoped to a shared context.
-- Each member has a **perms** value: `"read"` or `"write"`. The space owner is implicit `write`.
+- Every member has full read + write inside the space. No per-member permission axis — membership is the whole ACL.
 - Each space has an optional **app policy**: `{ mode: "allow" | "deny", apps: [client_id, …] }` — gates which OAuth clients can act in the space.
 
 That's it. Every feature (private channels, invite-only threads, shared albums) is one-space-per-permission-boundary with records of whatever NSIDs the app defines. If you need finer-grained access (e.g. "admins" vs "members"), model it as multiple spaces or enforce at the app layer.
@@ -25,7 +25,7 @@ That's it. Every feature (private channels, invite-only threads, shared albums) 
 
 **Each permission boundary = its own space.** No nested ACLs, no per-record permissions, no per-collection policies. Matches the blog's model; keeps the library generic.
 
-**Read/write as the only permission axis.** The library enforces: read = any member, write = members with `"write"` (owner always). Apps that need richer roles layer them on top of multiple spaces or check `clientId` / authorDid in their handlers.
+**Membership is the whole ACL.** Being in the member list = full read + write. No per-member permission granularity. Apps that need richer roles model them as multiple spaces or check `clientId` / `authorDid` in their handlers.
 
 **atproto service-auth JWTs.** Verification uses `@atcute/xrpc-server/auth.ServiceJwtVerifier`: validates signature against issuer's DID doc, checks `aud` matches the configured service DID, checks `lxm` covers the method. Same path third-party apps and our own code go through.
 

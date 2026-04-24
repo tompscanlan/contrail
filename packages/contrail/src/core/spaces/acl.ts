@@ -40,9 +40,10 @@ const hasMember = (space: SpaceRow, member: SpaceMemberRow | null, did: string) 
   isOwner(space, did) || member != null;
 
 /** Space-level access check.
- *  Membership = access. Any member can read and write; the app filters
- *  writes it doesn't want on its own side. Delete keeps the owner/own-record
- *  rule so a random member can't nuke other people's records. */
+ *  Membership = access. Any member (including owner) can read and write.
+ *  Delete is scoped to the caller's own records — owners don't get a bypass.
+ *  A random member can't nuke other people's records, and neither can the
+ *  owner. To remove a non-author record, delete the whole space. */
 export function checkAccess(input: AclInput): AclResult {
   if (!checkAppPolicy(input.space.appPolicy, input.clientId)) {
     return { allow: false, reason: "app-not-allowed" };
@@ -55,7 +56,6 @@ export function checkAccess(input: AclInput): AclResult {
   }
 
   if (input.op === "delete") {
-    if (isOwner(input.space, input.callerDid)) return { allow: true };
     if (!hasMember(input.space, input.member, input.callerDid)) {
       return { allow: false, reason: "not-member" };
     }

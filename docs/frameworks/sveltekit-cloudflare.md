@@ -229,8 +229,9 @@ From now on:
 - [Indexing](../01-indexing.md) — config options, adapter choices
 - [Querying](../02-querying.md) — filters, sorts, hydration, search
 - [Lexicons](../03-lexicons.md) — generate TS types for your XRPC surface
-- [Spaces](../04-spaces.md) / [Communities](../05-communities.md) — private records + group-controlled DIDs, which both slot into the same handler you just mounted
-- [Sync](../06-sync.md) — reactive client-side subscriptions (`createWatchStore`) wrapped in Svelte `$state`
+- [Auth](../04-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
+- [Spaces](../05-spaces.md) / [Communities](../06-communities.md) — private records + group-controlled DIDs, which both slot into the same handler you just mounted
+- [Sync](../07-sync.md) — reactive client-side subscriptions (`createWatchStore`) wrapped in Svelte `$state`
 
 ## Common gotchas
 

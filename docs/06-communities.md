@@ -1,6 +1,6 @@
 # Communities
 
-Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys are held by the appview on behalf of multiple members, with tiered access levels. Built on top of [spaces](./04-spaces.md).
+Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys are held by the appview on behalf of multiple members, with tiered access levels. Built on top of [spaces](./05-spaces.md).
 
 ## When to use this
 
@@ -29,13 +29,13 @@ Stored credentials (app passwords for adopted communities, signing keys for mint
 
 ## How it composes with spaces
 
-A community *owns* spaces. Members of the community get access to community-owned spaces based on their level. Grant access per-space per-level:
+A community *owns* spaces. Members of the community get access to community-owned spaces based on their access level. Grant access per-space per-level:
 
 ```
-community.space.grant  { spaceUri, level: "admin", perms: "write" }
+community.space.grant  { spaceUri, subject: { did: "did:plc:..." }, accessLevel: "admin" }
 ```
 
-The spaces layer stays ignorant of access levels — it just sees "this DID is a member with these perms." The community layer projects member × level → space perms.
+The spaces layer stays ignorant of access levels — it just sees "this DID is a member." The community layer projects member × level → membership in specific spaces. Once a DID is a member of a space (through a community grant or otherwise), they have full read + write inside it.
 
 ## XRPCs
 

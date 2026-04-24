@@ -22,9 +22,9 @@ function mkMember(did: string): SpaceMemberRow {
 }
 
 describe("spaces acl", () => {
-  it("owner can read/write/delete without a member row", () => {
+  it("owner can read/write without a member row", () => {
     const s = mkSpace();
-    for (const op of ["read", "write", "delete"] as const) {
+    for (const op of ["read", "write"] as const) {
       const r = checkAccess({
         op,
         space: s,
@@ -33,6 +33,18 @@ describe("spaces acl", () => {
       });
       expect(r.allow).toBe(true);
     }
+  });
+
+  it("owner can delete own record without a member row", () => {
+    const s = mkSpace();
+    const r = checkAccess({
+      op: "delete",
+      space: s,
+      callerDid: "did:plc:alice",
+      member: null,
+      targetAuthorDid: "did:plc:alice",
+    });
+    expect(r.allow).toBe(true);
   });
 
   it("non-member cannot read", () => {
@@ -97,7 +109,7 @@ describe("spaces acl", () => {
     expect((r as any).reason).toBe("not-own-record");
   });
 
-  it("delete any: owner can delete anyone's record", () => {
+  it("owner cannot delete someone else's record (no bypass)", () => {
     const s = mkSpace();
     const r = checkAccess({
       op: "delete",
@@ -106,7 +118,8 @@ describe("spaces acl", () => {
       member: null,
       targetAuthorDid: "did:plc:bob",
     });
-    expect(r.allow).toBe(true);
+    expect(r.allow).toBe(false);
+    expect((r as any).reason).toBe("not-own-record");
   });
 
   it("delete by non-member: denied as not-member, not not-own-record", () => {

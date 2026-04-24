@@ -7,7 +7,7 @@ Auth-gated store for records that can't live on public PDSes — private events,
 > A **space** is a bag of records with one lock. The **member list** says who has the key.
 
 - One owner (DID), one type (NSID), one key. Identified by `at://<owner>/<type>/<key>`.
-- Members have `read` or `write`. Owner is implicit `write`.
+- Every member (including owner) has read + write inside the space. Delete is scoped to your own records — no one can remove records they didn't author, owner included. To wipe everything, delete the space.
 - Optional **app policy** gates which OAuth clients can act in the space.
 
 Every permission boundary is its own space. No nested ACLs. Richer roles = more spaces or app-layer checks.
@@ -35,9 +35,13 @@ public_only: { collection: "com.example.public", allowInSpaces: false }
 
 ## Auth
 
-atproto service-auth JWTs via `@atcute/xrpc-server`. Middleware validates signature, `aud`, and `lxm` before the handler runs. Apps acting in a space mint a JWT against the user's PDS with `Atproto-Proxy: did:web:example.com#com_example_space`, forward to your service, it verifies and executes.
+Spaces use the standard contrail auth surface — service-auth JWTs for third-party apps, in-process server clients for your own loaders, invite tokens for anonymous read-grant links. See [Auth](./04-auth.md) for the full picture.
 
-**Note:** Use the plain DID (no `#fragment`) as `serviceDid` — the fragment form only belongs in your DID doc's service entry.
+Space-specific wiring:
+
+- `serviceDid` in the config is the `aud` contrail expects on incoming JWTs. Plain DID, no `#fragment`.
+- Apps acting in a space send `Atproto-Proxy: <serviceDid>#<service-id-from-your-did-doc>` so the user's PDS routes correctly.
+- Invite redemption via service-auth JWT grants membership; via `?inviteToken=...` query param grants read-only bearer access to that space.
 
 ## Unified `listRecords`
 
@@ -51,7 +55,7 @@ Filters, sorts, hydration, and references work across all three. Records from a 
 
 ## Invites
 
-Stored as hashed tokens. Redemption is a single atomic UPDATE that checks `!revoked && !expired && !exhausted`. Generate, hand out the plaintext once, verify later.
+First-class primitive — see [Auth § Invite tokens](./04-auth.md#invite-tokens) for the mechanism. Space-specific: create via `com.example.space.invite.create`, redeem via `.redeem` (membership grant) or `?inviteToken=...` query param (read-only bearer grant).
 
 ## XRPCs
 
