@@ -1,6 +1,6 @@
 import type { JetstreamSubscription } from "@atcute/jetstream";
-import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
-import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailConfig } from "./types";
+import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS, resolveConfig } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
 import { createIngestState } from "./jetstream";
@@ -29,6 +29,13 @@ export async function runPersistent(
   config: ContrailConfig,
   options?: PersistentIngestOptions,
 ): Promise<void> {
+  // Internals (applyEvents, count updates, query planning) read `_resolved`
+  // and silently skip features when it's missing. The Contrail class resolves
+  // in its constructor; callers using this raw export must also get a resolved
+  // config, so do it defensively here. resolveConfig is idempotent.
+  if (!(config as ResolvedContrailConfig)._resolved) {
+    config = resolveConfig(config);
+  }
   const log = getLogger(config, options);
   const batchSize = options?.batchSize ?? 50;
   const flushIntervalMs = options?.flushIntervalMs ?? 5_000;

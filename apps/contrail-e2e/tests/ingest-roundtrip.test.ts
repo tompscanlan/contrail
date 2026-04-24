@@ -19,7 +19,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import pg from "pg";
 import { CredentialManager, Client } from "@atcute/client";
 import "@atcute/atproto";
-import { Contrail } from "@atmo-dev/contrail";
+import { Contrail, runPersistent } from "@atmo-dev/contrail";
 import { createHandler } from "@atmo-dev/contrail/server";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import { config as baseConfig } from "../config";
@@ -64,11 +64,8 @@ describe("ingest roundtrip (devnet PDS → Jetstream → Contrail)", () => {
     await contrail.init();
     handle = createHandler(contrail);
 
-    // In-process ingester via Contrail so the config is resolved (raw
-    // runPersistent expects a resolved config — grouped counts silently
-    // don't update otherwise).
     ingestController = new AbortController();
-    ingestPromise = contrail.runPersistent({
+    ingestPromise = runPersistent(db, baseConfig, {
       batchSize: 50,
       flushIntervalMs: 500,
       signal: ingestController.signal,

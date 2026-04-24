@@ -24,7 +24,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import pg from "pg";
 import { CredentialManager, Client } from "@atcute/client";
 import "@atcute/atproto";
-import { Contrail } from "@atmo-dev/contrail";
+import { runPersistent } from "@atmo-dev/contrail";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import { config as baseConfig } from "../config";
 import {
@@ -73,15 +73,11 @@ describe("cursor resume (ingester stops, events pile up, ingester restarts)", ()
 
   it("resumes from saved cursor and picks up commits issued while down", async () => {
     const db = createPostgresDatabase(pool);
-    // Go through the Contrail wrapper so the config is resolved; raw
-    // runPersistent expects a resolved config.
-    const contrail = new Contrail({ ...baseConfig, db });
-    await contrail.init();
     const runOpts = { batchSize: 50, flushIntervalMs: 500 };
 
     // ---- Phase 1: start ingester, publish A, verify indexed ----
     const c1 = new AbortController();
-    const ingest1 = contrail.runPersistent({ ...runOpts, signal: c1.signal });
+    const ingest1 = runPersistent(db, baseConfig, { ...runOpts, signal: c1.signal });
 
     const nameA = `A-${Date.now()}`;
     const aRes = await client.post("com.atproto.repo.createRecord", {
@@ -164,7 +160,7 @@ describe("cursor resume (ingester stops, events pile up, ingester restarts)", ()
 
     // ---- Phase 4: restart ingester, assert replay ----
     const c2 = new AbortController();
-    const ingest2 = contrail.runPersistent({ ...runOpts, signal: c2.signal });
+    const ingest2 = runPersistent(db, baseConfig, { ...runOpts, signal: c2.signal });
 
     try {
       const indexedB = await waitFor(
