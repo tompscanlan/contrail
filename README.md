@@ -40,11 +40,12 @@ export default { fetch: createHandler(contrail) };
 
 ## Docs
 
-- [Indexing](./docs/indexing.md) — the core: collections, queries, ingestion, adapters
-- [Spaces](./docs/spaces.md) — permissioned records stored by the appview
-- [Communities](./docs/communities.md) — group-controlled atproto DIDs
-- [Sync](./docs/sync.md) — reactive client-side store over `watchRecords`
-- [Lexicons](./docs/lexicons.md) — `contrail-lex` CLI and codegen
+- [Indexing](./docs/01-indexing.md) — the core: collections, queries, ingestion, adapters
+- [Spaces](./docs/02-spaces.md) — permissioned records stored by the appview
+- [Communities](./docs/03-communities.md) — group-controlled atproto DIDs
+- [Sync](./docs/04-sync.md) — reactive client-side store over `watchRecords`
+- [Lexicons](./docs/05-lexicons.md) — `contrail-lex` CLI and codegen
+- [Examples](./docs/06-examples.md) — reference deployments in the repo
 
 ## Packages
 

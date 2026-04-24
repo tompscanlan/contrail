@@ -91,6 +91,6 @@ const db = createPostgresDatabase(pool);
 | `jetstreams` | Bluesky | Jetstream URLs |
 | `relays` | Bluesky | Relay URLs for discovery |
 | `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
-| `spaces` | — | See [Spaces](./spaces.md) |
-| `community` | — | See [Communities](./communities.md) |
-| `realtime` | — | See [Sync](./sync.md) |
+| `spaces` | — | See [Spaces](./02-spaces.md) |
+| `community` | — | See [Communities](./03-communities.md) |
+| `realtime` | — | See [Sync](./04-sync.md) |

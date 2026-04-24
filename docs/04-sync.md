@@ -78,7 +78,7 @@ realtime: {
 }
 ```
 
-See [indexing.md](./indexing.md) for the full config surface.
+See [Indexing](./01-indexing.md) for the full config surface.
 
 ## Lifecycle
 
