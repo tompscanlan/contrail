@@ -1,6 +1,6 @@
 {
 	"name": "contrail",
-	"main": "worker.ts",
+	"main": "src/worker.ts",
 	"compatibility_date": "2025-12-25",
 	"observability": {
 		"enabled": true

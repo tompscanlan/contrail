@@ -1,7 +1,7 @@
 import { Contrail } from '@atmo-dev/contrail';
 import { createHandler, createServerClient } from '@atmo-dev/contrail/server';
 import type { Client } from '@atcute/client';
-import { config } from './config';
+import { config } from '../contrail.config';
 
 export const contrail = new Contrail(config);
 

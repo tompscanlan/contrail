@@ -5,8 +5,10 @@ import { queryRecords } from "./core/db/records";
 import type { QueryOptions, SortOption } from "./core/db/records";
 import { runIngestCycle, createIngestState } from "./core/jetstream";
 import type { IngestState } from "./core/jetstream";
-import { discoverDIDs, backfillAll } from "./core/backfill";
+import { discoverDIDs, backfillPending } from "./core/backfill";
 import type { BackfillAllOptions, BackfillProgress } from "./core/backfill";
+import { refresh as runRefresh } from "./core/refresh";
+import type { RefreshOptions, RefreshResult } from "./core/refresh";
 import { processNotifyUris } from "./core/router/notify";
 import type { NotifyResult } from "./core/router/notify";
 import { runPersistent as runPersistentIngestion } from "./core/persistent";
@@ -114,18 +116,92 @@ export class Contrail {
     options?: BackfillAllOptions,
     db?: Database
   ): Promise<number> {
-    return backfillAll(this.getDb(db), this.config, options);
+    return backfillPending(this.getDb(db), this.config, options);
   }
 
-  /** Discover + backfill in one call. */
-  async sync(
+  /** Discover every DID with records in the configured collections, then
+   *  backfill their history. Logs progress via `config.logger` — supply
+   *  `onProgress` to take over output, or pass a no-op logger in the config
+   *  to silence the defaults. */
+  async backfillAll(
     options?: BackfillAllOptions,
     db?: Database
   ): Promise<{ discovered: number; backfilled: number }> {
     const d = this.getDb(db);
+    const logger = this.config.logger;
+    const startedAt = Date.now();
+
+    logger?.log?.("discovering users…");
     const discovered = await this.discover(d);
-    const backfilled = await this.backfill(options, d);
+    logger?.log?.(`  discovered ${discovered.length} users`);
+
+    // Wrap the call with a throttled default progress logger when the
+    // caller hasn't supplied their own. Throttle at 2s so we don't spam in
+    // fast/local runs; final summary always prints.
+    let effective = options;
+    if (!options?.onProgress) {
+      let lastLogAt = 0;
+      effective = {
+        ...options,
+        onProgress: ({ records, usersComplete, usersTotal, usersFailed }) => {
+          const now = Date.now();
+          if (now - lastLogAt < 2_000) return;
+          lastLogAt = now;
+          const failStr = usersFailed > 0 ? `, ${usersFailed} failed` : "";
+          logger?.log?.(
+            `  ${records} records | ${usersComplete}/${usersTotal} users${failStr}`
+          );
+        },
+      };
+    }
+
+    logger?.log?.("backfilling…");
+    const backfilled = await this.backfill(effective, d);
+    const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+    logger?.log?.(
+      `  done: ${backfilled} records across ${discovered.length} users in ${elapsedS}s`
+    );
     return { discovered: discovered.length, backfilled };
+  }
+
+  /** Fresh sweep: re-walk every known DID's PDS, compare each record against
+   *  our DB, count anything missing or stale (outside the ignore window).
+   *  Apply the deltas. Returns stats per-collection + totals.
+   *
+   *  Progress logs via `config.logger` unless `onProgress` is supplied. */
+  async refresh(
+    options?: RefreshOptions,
+    db?: Database
+  ): Promise<RefreshResult> {
+    const d = this.getDb(db);
+    const logger = this.config.logger;
+
+    let effective = options;
+    if (!options?.onProgress) {
+      let lastLogAt = 0;
+      effective = {
+        ...options,
+        onProgress: ({ usersComplete, usersTotal, usersFailed, recordsScanned }) => {
+          const now = Date.now();
+          if (now - lastLogAt < 2_000) return;
+          lastLogAt = now;
+          const failStr = usersFailed > 0 ? `, ${usersFailed} failed` : "";
+          logger?.log?.(
+            `  ${recordsScanned} records scanned | ${usersComplete}/${usersTotal} users${failStr}`
+          );
+        },
+      };
+    }
+
+    logger?.log?.("refreshing…");
+    const result = await runRefresh(d, this.config, effective);
+    const elapsedS = (result.elapsedMs / 1000).toFixed(1);
+    logger?.log?.(
+      `  done: ${result.total.missing} missing, ${result.total.staleUpdates} stale updates ` +
+        `across ${result.usersScanned} users in ${elapsedS}s` +
+        (result.usersFailed > 0 ? ` (${result.usersFailed} failed)` : "")
+    );
+    return result;
   }
 
   /** Immediately fetch and index specific records from their PDS. */

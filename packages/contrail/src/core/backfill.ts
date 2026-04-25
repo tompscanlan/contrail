@@ -219,7 +219,7 @@ export interface BackfillAllOptions {
   onProgress?: (progress: BackfillProgress) => void;
 }
 
-export async function backfillAll(
+export async function backfillPending(
   db: Database,
   config: ContrailConfig,
   options?: BackfillAllOptions

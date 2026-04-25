@@ -39,9 +39,11 @@
 		if (profiles[did]) return;
 		try {
 			const res = await contrailClient.get('statusphere.app.getProfile', {
-				params: { actor: did }
+				params: { actor: did as `did:${string}:${string}` }
 			});
-			profiles[did] = extractProfile(res.data);
+			if (!res.ok) return;
+			const entry = res.data.profiles?.[0];
+			if (entry) profiles[did] = extractProfile(entry);
 		} catch {
 			// ignore fetch errors
 		}

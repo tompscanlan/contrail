@@ -6,7 +6,7 @@
  *   pnpm sync:remote    # prod D1
  */
 import { Contrail } from '@atmo-dev/contrail';
-import { config } from '../src/lib/contrail/config';
+import { config } from '../src/lib/contrail.config';
 import { getPlatformProxy } from 'wrangler';
 
 function elapsed(start: number): string {

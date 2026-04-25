@@ -83,7 +83,7 @@ describe("ingest roundtrip (devnet PDS → Jetstream → Contrail)", () => {
     const res = await handle(new Request(url));
     if (res.status === 404) return undefined;
     if (!res.ok) throw new Error(`getRecord ${uri} → ${res.status}: ${await res.text()}`);
-    // Contrail's getRecord returns the formatted row — uri/did/cid/time_us/record
+    // Contrail's getRecord returns the formatted row — uri/did/cid/time_us/value
     // plus flattened relation counts (e.g. rsvpsGoingCount).
     return await res.json();
   }
@@ -113,8 +113,8 @@ describe("ingest roundtrip (devnet PDS → Jetstream → Contrail)", () => {
 
     expect(indexed.uri).toBe(eventUri);
     expect(indexed.did).toBe(account.did);
-    expect(indexed.record.name).toBe(eventName);
-    expect(indexed.record.startsAt).toBe(startsAt);
+    expect(indexed.value.name).toBe(eventName);
+    expect(indexed.value.startsAt).toBe(startsAt);
   });
 
   it("increments rsvpsGoingCount when an RSVP is published", async () => {

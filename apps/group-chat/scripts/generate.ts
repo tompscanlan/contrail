@@ -1,7 +1,7 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { writeFileSync } from 'fs';
-import { baseConfig } from '../src/lib/contrail/config';
+import { baseConfig } from '../src/lib/contrail.config';
 import { generateLexicons, extractXrpcMethods } from '@atmo-dev/contrail-lexicons';
 
 const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,7 +19,7 @@ const configForGen = {
 const generated = generateLexicons({
 	config: configForGen,
 	rootDir: ROOT_DIR,
-	outputDir: join(ROOT_DIR, 'lexicons-generated'),
+	outputDir: join(ROOT_DIR, 'lexicons', 'generated'),
 	writeRuntimeFiles: true
 });
 

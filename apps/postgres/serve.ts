@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { Contrail } from "@atmo-dev/contrail";
 import { createHandler } from "@atmo-dev/contrail/server";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
-import { config } from "./config";
+import { config } from "./contrail.config";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??

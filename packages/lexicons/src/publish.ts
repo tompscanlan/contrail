@@ -3,7 +3,7 @@
  * records. Each lexicon ends up at `at://<did>/com.atproto.lexicon.schema/<nsid>`.
  *
  * Exposed as a library function so downstream deployments can wrap it with a
- * one-line script pointing at their own `lexicons-generated/` directory.
+ * one-line script pointing at their own `lexicons/generated/` directory.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -110,12 +110,15 @@ export function nsidRootDomain(nsid: string): string {
 export interface PublishOptions {
   /** Directory to walk for `*.json` lexicon files. */
   generatedDir: string;
-  /** PDS account handle or DID. */
-  identifier: string;
-  /** App password (or equivalent on a non-bsky PDS). */
-  password: string;
+  /** PDS account handle or DID. Not required when `dryRun` is true. */
+  identifier?: string;
+  /** App password (or equivalent on a non-bsky PDS). Not required when `dryRun` is true. */
+  password?: string;
   /** Skip the interactive "do you control these zones?" prompt. */
   skipConfirm?: boolean;
+  /** Print what would be published + the DNS records that would be required,
+   *  then return without logging in or writing anything to the PDS. */
+  dryRun?: boolean;
 }
 
 export async function publishLexicons(opts: PublishOptions): Promise<{
@@ -139,7 +142,14 @@ export async function publishLexicons(opts: PublishOptions): Promise<{
   }
   const sortedAuthorities = [...authorities].sort();
 
-  console.log(`About to publish ${lexicons.length} lexicons from ${opts.generatedDir}.\n`);
+  const header = opts.dryRun
+    ? `[dry-run] Would publish ${lexicons.length} lexicons from ${opts.generatedDir}:`
+    : `About to publish ${lexicons.length} lexicons from ${opts.generatedDir}.`;
+  console.log(`${header}\n`);
+  if (opts.dryRun) {
+    for (const lex of lexicons) console.log(`  ${lex.id}`);
+    console.log("");
+  }
   console.log(
     `⚠  Do you control ${rootDomains.size === 1 ? "the DNS zone" : "these DNS zones"} below?`
   );
@@ -153,6 +163,29 @@ export async function publishLexicons(opts: PublishOptions): Promise<{
       "   permission-set lexicon by resolving the NSID, and resolution\n" +
       "   requires a valid TXT record.\n"
   );
+
+  if (opts.dryRun) {
+    console.log("─────────────────────────────────────────────────");
+    console.log("DNS TXT records that would be needed for NSID resolution");
+    console.log("─────────────────────────────────────────────────");
+    console.log(
+      "Atproto NSID resolution does NOT walk up — each distinct authority\n" +
+        "needs its own TXT record. One record per unique authority below.\n" +
+        "(DID would be filled in at publish time, once logged in.)\n"
+    );
+    for (const authority of sortedAuthorities) {
+      console.log(`  host:  _lexicon.${authority}`);
+      console.log(`  value: did=<your-did-here>`);
+      console.log("");
+    }
+    console.log(`Total: ${sortedAuthorities.length} DNS TXT record(s) to add.`);
+    console.log("\n[dry-run] No PDS login or writes performed.");
+    return { published: 0, failed: [], authorities: sortedAuthorities, session: null as never };
+  }
+
+  if (!opts.identifier || !opts.password) {
+    throw new Error("`identifier` and `password` are required when `dryRun` is false");
+  }
 
   if (!opts.skipConfirm) {
     const rl = createInterface({ input, output });

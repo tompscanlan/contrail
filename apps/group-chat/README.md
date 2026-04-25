@@ -21,7 +21,7 @@ pnpm dev
 ```
 
 Re-run `pnpm generate` whenever you add/remove collections or toggle contrail
-modules in `src/lib/contrail/config.ts`: the OAuth scope list is derived from
+modules in `src/lib/contrail.config.ts`: the OAuth scope list is derived from
 it, so the consent screen only asks for permissions you actually use.
 
 Dev mode uses a loopback OAuth client — no Cloudflare setup needed. The realtime Durable Object runs locally via miniflare.

@@ -25,20 +25,14 @@ importers:
         version: link:../../packages/contrail
     devDependencies:
       '@atcute/lex-cli':
-        specifier: ^2.5.3
+        specifier: ^2.8.1
         version: 2.8.1
-      '@atcute/lexicon-doc':
-        specifier: ^2.1.2
-        version: 2.2.0
       '@atmo-dev/contrail-lexicons':
         specifier: workspace:*
         version: link:../../packages/lexicons
       '@cloudflare/workers-types':
         specifier: ^4.20250124.0
         version: 4.20260424.1
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -226,46 +220,6 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  apps/rsvp-atmo:
-    dependencies:
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../../packages/contrail
-    devDependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/client':
-        specifier: ^4.2.1
-        version: 4.2.1
-      '@atcute/lex-cli':
-        specifier: ^2.5.3
-        version: 2.8.1
-      '@atcute/lexicon-doc':
-        specifier: ^2.1.2
-        version: 2.2.0
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atmo-dev/contrail-lexicons':
-        specifier: workspace:*
-        version: link:../../packages/lexicons
-      '@cloudflare/workers-types':
-        specifier: ^4.20250124.0
-        version: 4.20260424.1
-      '@types/node':
-        specifier: ^25.5.0
-        version: 25.6.0
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      wrangler:
-        specifier: ^4.63.0
-        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
-
   apps/sveltekit-cloudflare-workers:
     dependencies:
       '@atcute/jetstream':
@@ -419,6 +373,9 @@ importers:
       hono:
         specifier: ^4.12.8
         version: 4.12.15
+      jiti:
+        specifier: ^2.4.0
+        version: 2.6.1
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250124.0
@@ -441,16 +398,19 @@ importers:
       vitest:
         specifier: ^4.1.0
         version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
+      wrangler:
+        specifier: ^4.63.0
+        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
 
   packages/lexicons:
     dependencies:
       '@atcute/lex-cli':
         specifier: ^2.5.3
         version: 2.8.1
-    devDependencies:
       '@atmo-dev/contrail':
         specifier: workspace:*
         version: link:../contrail
+    devDependencies:
       '@types/node':
         specifier: ^25.5.0
         version: 25.6.0

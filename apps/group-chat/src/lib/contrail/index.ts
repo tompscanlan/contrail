@@ -13,7 +13,7 @@ import {
 import { createHandler, createServerClient } from '@atmo-dev/contrail/server';
 import type { Client } from '@atcute/client';
 import { dev } from '$app/environment';
-import { baseConfig } from './config';
+import { baseConfig } from '../contrail.config';
 
 type Env = App.Platform['env'];
 

@@ -26,6 +26,12 @@ export { resolveConfig, validateConfig } from "./core/types";
 export type { QueryOptions, SortOption } from "./core/db/records";
 export type { BackfillProgress, BackfillAllOptions } from "./core/backfill";
 export type { NotifyResult } from "./core/router/notify";
+export type {
+  RefreshOptions,
+  RefreshResult,
+  RefreshProgress,
+  CollectionStats,
+} from "./core/refresh";
 
 export { runPersistent } from "./core/persistent";
 export type { PersistentIngestOptions } from "./core/persistent";
