@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Database } from "../src/core/types";
-import { createTestDbWithSchema, TEST_CONFIG } from "./helpers";
+import type { ContrailConfig, Database } from "../src/core/types";
+import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 import { runPersistent } from "../src/core/persistent";
 import { getLastCursor, queryRecords } from "../src/core/db/records";
+import { initSchema } from "../src/core/db/schema";
 
 // Mock identity resolution to avoid network calls in tests
 vi.mock("../src/core/identity", () => ({
@@ -199,6 +200,96 @@ describe("runPersistent", () => {
 
     controller.abort();
     await promise;
+  });
+
+  it("resolves config internally when given an unresolved ContrailConfig", async () => {
+    // Regression test for the silent grouped-count bug: passing a raw
+    // ContrailConfig (no `_resolved`) used to let total counts update while
+    // grouped count columns stayed at 0. runPersistent must defensively
+    // resolve so consumers of the raw export get the same behavior as those
+    // going through the Contrail class wrapper.
+    const rawConfig: ContrailConfig = {
+      namespace: "com.example",
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          relations: {
+            rsvps: {
+              collection: "rsvp",
+              groupBy: "status",
+              groups: {
+                going: "community.lexicon.calendar.rsvp#going",
+                notgoing: "community.lexicon.calendar.rsvp#notgoing",
+              },
+            },
+          },
+        },
+        rsvp: {
+          collection: "community.lexicon.calendar.rsvp",
+          references: {
+            event: { collection: "event", field: "subject.uri" },
+          },
+        },
+      },
+    };
+    // Sanity: the raw object must NOT have _resolved — that's the whole point.
+    expect((rawConfig as any)._resolved).toBeUndefined();
+
+    const freshDb = createTestDb();
+    await initSchema(freshDb, rawConfig);
+
+    const eventUri = "at://did:plc:alice/community.lexicon.calendar.event/evt1";
+    const events = [
+      {
+        kind: "commit" as const,
+        did: "did:plc:alice",
+        time_us: 9000,
+        commit: {
+          collection: "community.lexicon.calendar.event",
+          operation: "create",
+          rkey: "evt1",
+          cid: "cidE",
+          record: { name: "E", startsAt: "2026-04-01T10:00:00Z", mode: "online" },
+        },
+      },
+      {
+        kind: "commit" as const,
+        did: "did:plc:alice",
+        time_us: 9001,
+        commit: {
+          collection: "community.lexicon.calendar.rsvp",
+          operation: "create",
+          rkey: "r1",
+          cid: "cidR",
+          record: {
+            subject: { uri: eventUri, cid: "cidE" },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        },
+      },
+    ];
+
+    const controller = new AbortController();
+    const promise = runPersistent(freshDb, rawConfig, {
+      batchSize: 100,
+      flushIntervalMs: 50,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription(events) as any,
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    controller.abort();
+    await promise;
+
+    // Query the raw count columns directly — using queryRecords would hide
+    // the bug since it hydrates via the resolved config anyway.
+    const row = await freshDb
+      .prepare(`SELECT count_rsvp, count_rsvp_going FROM records_event WHERE uri = ?`)
+      .bind(eventUri)
+      .first<{ count_rsvp: number; count_rsvp_going: number }>();
+    expect(row).not.toBeNull();
+    expect(row!.count_rsvp).toBe(1);
+    // This is the assertion that would fail before the fix.
+    expect(row!.count_rsvp_going).toBe(1);
   });
 
   it("skips non-commit events", async () => {
