@@ -1,6 +1,6 @@
 import type { JetstreamSubscription } from "@atcute/jetstream";
-import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
-import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailConfig } from "./types";
+import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS, resolveConfig } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
 import { createIngestState } from "./jetstream";
@@ -29,6 +29,13 @@ export async function runPersistent(
   config: ContrailConfig,
   options?: PersistentIngestOptions,
 ): Promise<void> {
+  // Internals (applyEvents, count updates, query planning) read `_resolved`
+  // and silently skip features when it's missing. The Contrail class resolves
+  // in its constructor; callers using this raw export must also get a resolved
+  // config, so do it defensively here. resolveConfig is idempotent.
+  if (!(config as ResolvedContrailConfig)._resolved) {
+    config = resolveConfig(config);
+  }
   const log = getLogger(config, options);
   const batchSize = options?.batchSize ?? 50;
   const flushIntervalMs = options?.flushIntervalMs ?? 5_000;
@@ -120,21 +127,15 @@ async function streamAndFlush(
       });
 
   const buffer: IngestEvent[] = [];
-  let flushDue = false;
+  // Guards against overlap between the periodic timer flush and a main-loop
+  // batchSize-driven flush. The main loop only ever awaits flush() sequentially,
+  // but the setInterval callback is a second entry point on another tick.
   let flushing = false;
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const resetFlushTimer = () => {
-    if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(() => { flushDue = true; }, flushIntervalMs);
-  };
 
   const flush = async () => {
     if (buffer.length === 0 || flushing) return;
     flushing = true;
     const batch = buffer.splice(0);
-    flushDue = false;
-    resetFlushTimer();
 
     try {
       await applyEvents(db, batch, config, { pubsub: opts.pubsub });
@@ -142,7 +143,6 @@ async function streamAndFlush(
       const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
       await saveCursor(db, lastTimeUs);
 
-      // Identity refresh
       const uniqueDids = [...new Set(batch.map((e) => e.did))];
       if (uniqueDids.length > 0) {
         try {
@@ -152,7 +152,6 @@ async function streamAndFlush(
         }
       }
 
-      // Feed pruning
       if (config.feeds && Date.now() - state.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
         const maxItems = Math.max(
           ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
@@ -168,38 +167,37 @@ async function streamAndFlush(
     }
   };
 
-  // Handle abort
+  // Periodic flush decoupled from the main loop. Runs even when Jetstream is
+  // idle, which is the whole point — without it, buffered events strand until
+  // the next event or abort. Errors log and retry next interval rather than
+  // propagate, so transient DB hiccups don't force a reconnect.
+  const flushTimer = setInterval(() => {
+    flush().catch((err) => log.error(`Timer flush failed: ${err}`));
+  }, flushIntervalMs);
+
   const onAbort = () => {
-    if (flushTimer) clearTimeout(flushTimer);
+    clearInterval(flushTimer);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
-  resetFlushTimer();
-
-  // Use manual iterator so we can race next() against abort signal
   const iterator = subscription[Symbol.asyncIterator]();
 
   try {
-    while (true) {
-      if (signal?.aborted) break;
+    while (!signal?.aborted) {
+      // Per-iteration abort race so the handler can be removed synchronously
+      // after the race settles — otherwise addEventListener calls accumulate on
+      // the signal across the streamAndFlush lifetime.
+      let abortHandler!: () => void;
+      const abortPromise = new Promise<IteratorResult<any>>((resolve) => {
+        abortHandler = () => resolve({ value: undefined, done: true });
+        signal?.addEventListener("abort", abortHandler, { once: true });
+      });
 
-      // Race the next event against abort signal
       let result: IteratorResult<any>;
-      if (signal) {
-        const nextPromise = iterator.next();
-        if (signal.aborted) {
-          result = { value: undefined, done: true };
-        } else {
-          let abortHandler: () => void;
-          const abortPromise = new Promise<IteratorResult<any>>((resolve) => {
-            abortHandler = () => resolve({ value: undefined, done: true });
-            signal.addEventListener("abort", abortHandler, { once: true });
-          });
-          result = await Promise.race([nextPromise, abortPromise]);
-          signal.removeEventListener("abort", abortHandler!);
-        }
-      } else {
-        result = await iterator.next();
+      try {
+        result = await Promise.race([iterator.next(), abortPromise]);
+      } finally {
+        signal?.removeEventListener("abort", abortHandler);
       }
 
       if (result.done) break;
@@ -232,15 +230,14 @@ async function streamAndFlush(
         }
       }
 
-      if (buffer.length >= batchSize || flushDue) {
+      if (buffer.length >= batchSize) {
         await flush();
       }
     }
   } finally {
-    // Clean up iterator
-    await iterator.return?.({ value: undefined, done: true });
-    // Final flush on exit
-    await flush();
+    clearInterval(flushTimer);
     signal?.removeEventListener("abort", onAbort);
+    await iterator.return?.({ value: undefined, done: true });
+    await flush();
   }
 }
