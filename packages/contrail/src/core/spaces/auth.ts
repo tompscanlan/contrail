@@ -73,7 +73,14 @@ export function createServiceAuthMiddleware(
 
     const result = await verifier.verify(token, { lxm });
     if (!result.ok) {
-      return c.json({ error: "AuthRequired", message: String(result.error) }, 401);
+      const err = result.error as { error?: string; description?: string } | undefined;
+      return c.json(
+        {
+          error: "AuthRequired",
+          message: err?.description ?? err?.error ?? String(result.error),
+        },
+        401,
+      );
     }
 
     c.set("serviceAuth", {
