@@ -51,7 +51,7 @@ Space-specific wiring:
 | `?spaceUri=…` + JWT | one space (ACL-gated) |
 | JWT, no `spaceUri` | public **unioned** with every space the caller is a member of |
 
-Filters, sorts, hydration, and references work across all three. Records from a space carry a `space: <spaceUri>` field.
+Filters, sorts, hydration, and references work across all three. Records from a space carry a `space: <spaceUri>` field on `listRecords`/`getRecord` responses (the watchRecords stream uses `_space` instead — see [Sync](./07-sync.md)).
 
 ## Invites
 
