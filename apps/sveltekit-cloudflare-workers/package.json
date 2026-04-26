@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "contrail-lex generate && contrail-lex types && vite build && tsx scripts/append-scheduled.ts",
+		"build": "contrail-lex generate && contrail-lex types && vite build && contrail append-scheduled",
 		"generate": "contrail-lex generate",
 		"generate:pull": "contrail-lex all",
 		"backfill": "contrail backfill",

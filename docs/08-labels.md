@@ -88,7 +88,7 @@ Account-level labels (subject = bare DID) hydrate onto profiles. They appear ins
 |---|---|---|
 | Cron-driven | `contrail.ingestLabels()` | Cloudflare Workers — one drain per cron tick |
 | Persistent | `contrail.runPersistentLabels()` | Node / long-lived servers — one socket per labeler, auto-reconnect |
-| One-shot backfill | `pnpm contrail labels-backfill [--remote]` | Local script, drains until each labeler reports caught up |
+| One-shot backfill | `pnpm contrail backfill --only labels [--remote]` | Local script, drains until each labeler reports caught up. (`pnpm contrail backfill` runs both records and labels.) |
 
 When `config.labels` is set, the bundled `createWorker` already calls `ingestLabels()` from `scheduled()` alongside `ingest()` — no boilerplate.
 

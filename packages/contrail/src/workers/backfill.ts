@@ -1,12 +1,14 @@
 /**
  * Wrangler-backed helpers for Cloudflare Workers deployments:
  *
- *   - `backfillAll` — one-time bulk load from scratch (uses the `backfills`
- *     state table to resume across runs).
+ *   - `backfillAll` — one-time bulk record load from scratch (uses the
+ *     `backfills` state table to resume across runs).
+ *   - `labelsBackfillAll` — drain pending events per configured labeler in
+ *     repeated cycles until each labeler's cursor stops advancing.
  *   - `refresh` — reconcile every known DID's PDS against our DB, report
  *     what's missing or stale. Use after outages or long idle periods.
  *
- * Both dynamically import `wrangler` (optional peer dep) and wire it to
+ * All dynamically import `wrangler` (optional peer dep) and wire it to
  * the user's D1 binding, then dispose the proxy on exit.
  */
 import { Contrail } from "../contrail.js";
@@ -94,4 +96,66 @@ export async function refresh(
       db
     )
   );
+}
+
+export interface LabelsBackfillAllViaWranglerOptions extends WranglerCommon {
+  /** Per-cycle subscribe timeout passed to `contrail.ingestLabels()`. Default: 60s. */
+  cycleTimeoutMs?: number;
+  /** Called after each cycle with whether any cursor advanced. */
+  onCycle?: (info: { cycle: number; advanced: boolean }) => void;
+}
+
+export interface LabelsBackfillAllResult {
+  /** Total ingest cycles run before any labeler stopped advancing twice in a row. */
+  cycles: number;
+  /** Whether labels were configured at all — false means we no-op'd. */
+  ran: boolean;
+}
+
+/**
+ * Drain pending events from each configured labeler. Runs `ingestLabels`
+ * in a loop, checking the `labeler_cursors` table after each cycle, and
+ * stops once two consecutive cycles fail to advance any cursor.
+ */
+export async function labelsBackfillAll(
+  opts: LabelsBackfillAllViaWranglerOptions
+): Promise<LabelsBackfillAllResult> {
+  return withWrangler(opts, async (contrail, db) => {
+    if (!opts.config.labels || opts.config.labels.sources.length === 0) {
+      return { cycles: 0, ran: false };
+    }
+    const timeoutMs = opts.cycleTimeoutMs ?? 60_000;
+    let cycles = 0;
+    let stable = 0;
+    while (stable < 2) {
+      const before = new Map<string, number>();
+      const beforeRows =
+        (
+          await db
+            .prepare("SELECT did, cursor FROM labeler_cursors")
+            .all<{ did: string; cursor: number }>()
+        ).results ?? [];
+      for (const r of beforeRows) before.set(r.did, r.cursor);
+
+      await contrail.ingestLabels({ timeoutMs }, db);
+      cycles++;
+
+      const afterRows =
+        (
+          await db
+            .prepare("SELECT did, cursor FROM labeler_cursors")
+            .all<{ did: string; cursor: number }>()
+        ).results ?? [];
+      let advanced = false;
+      for (const r of afterRows) {
+        if ((before.get(r.did) ?? -1) !== r.cursor) {
+          advanced = true;
+          break;
+        }
+      }
+      stable = advanced ? 0 : stable + 1;
+      opts.onCycle?.({ cycle: cycles, advanced });
+    }
+    return { cycles, ran: true };
+  });
 }

@@ -23,8 +23,6 @@ src/
     xrpc/[...path]/+server.ts   # mounts all contrail XRPC endpoints
     api/cron/+server.ts         # hit by the cron trigger (see below)
 wrangler.jsonc
-scripts/
-  append-scheduled.ts        # workaround — see "Cron" below
 ```
 
 ## 1. Declare the config
@@ -119,7 +117,7 @@ export const load: PageServerLoad = async ({ platform, locals }) => {
 
 ## 5. Cron ingest — the workaround
 
-SvelteKit's `@sveltejs/adapter-cloudflare` doesn't expose a `scheduled()` export on the generated worker ([issue #4841](https://github.com/sveltejs/kit/issues/4841)). The easiest fix: an HTTP endpoint that does the ingest, plus a post-build script that appends a `scheduled` handler calling that endpoint.
+SvelteKit's `@sveltejs/adapter-cloudflare` doesn't expose a `scheduled()` export on the generated worker ([issue #4841](https://github.com/sveltejs/kit/issues/4841)). The fix is an HTTP endpoint that does the ingest, plus a post-build patch on `_worker.js` that appends a `scheduled` handler calling it. The patch is what `contrail append-scheduled` does.
 
 **Endpoint:**
 
@@ -139,40 +137,16 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 };
 ```
 
-**Post-build patch:**
-
-```ts
-// scripts/append-scheduled.ts
-import { readFileSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const workerPath = join(root, ".svelte-kit", "cloudflare", "_worker.js");
-
-writeFileSync(
-  workerPath,
-  readFileSync(workerPath, "utf-8") +
-    `
-worker_default.scheduled = async function (event, env, ctx) {
-  const req = new Request("http://localhost/api/cron", {
-    method: "POST",
-    headers: { "X-Cron-Secret": env.CRON_SECRET ?? "" },
-  });
-  ctx.waitUntil(this.fetch(req, env, ctx));
-};
-`
-);
-```
-
-**Wire it into `build`:**
+**Wire `contrail append-scheduled` into your `build` script:**
 
 ```jsonc
 // package.json
 "scripts": {
-  "build": "vite build && tsx scripts/append-scheduled.ts"
+  "build": "vite build && contrail append-scheduled"
 }
 ```
+
+`contrail append-scheduled` patches `.svelte-kit/cloudflare/_worker.js` to append a `scheduled()` export that POSTs to `/api/cron` with `env.CRON_SECRET`. Override with `--worker <path>`, `--cron-path <path>`, or `--secret-env <name>` if your project diverges.
 
 `CRON_SECRET` is any random string — generate one, set it as a secret with `wrangler secret put CRON_SECRET`. The cron handler self-auths with it so nobody external can trigger your ingest.
 
@@ -237,5 +211,5 @@ From now on:
 
 - **Top-level await in `$lib/contrail/index.ts`** will fail to bundle — use the lazy `ensureInit` pattern above.
 - **`ensureInit` is per-isolate, not global.** Cloudflare cold-starts spin new isolates; each one pays one init call on its first request. `contrail.init()` is idempotent so this is safe, just not instant.
-- **SvelteKit's `adapter-cloudflare` regenerates `_worker.js` on every build**, so the `append-scheduled.ts` patch has to run *after* `vite build`. Don't try to put it in `prebuild`.
+- **SvelteKit's `adapter-cloudflare` regenerates `_worker.js` on every build**, so `contrail append-scheduled` has to run *after* `vite build`. Don't try to put it in `prebuild`.
 - **`D1Database` type in platform env** needs `@cloudflare/workers-types` in `devDependencies` and `types` in your tsconfig.
