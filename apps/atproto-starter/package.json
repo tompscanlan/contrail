@@ -1,5 +1,5 @@
 {
-	"name": "svelte-cloudflare-statusphere",
+	"name": "atproto-starter",
 	"private": true,
 	"version": "0.1.0",
 	"type": "module",
@@ -61,8 +61,8 @@
 	"license": "MIT",
 	"dependencies": {
 		"@atcute/jetstream": "^1.1.2",
-		"@atmo-dev/contrail": "workspace:*",
-		"@atmo-dev/contrail-lexicons": "workspace:*",
+		"@atmo-dev/contrail": "^0.4.1",
+		"@atmo-dev/contrail-lexicons": "^0.4.1",
 		"@foxui/core": "^0.9.1",
 		"@foxui/social": "^0.8.10",
 		"@foxui/time": "^0.8.5",

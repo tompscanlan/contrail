@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "svelte-atproto-oauth-cloudflare-workers",
+	"name": "atproto-starter",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"compatibility_date": "2025-12-25",
 	"compatibility_flags": ["nodejs_compat_v2"],
@@ -12,12 +12,12 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://statusphere.atmo.tools"
+		"OAUTH_PUBLIC_URL": "REPLACE_WITH_PUBLIC_URL"
 	},
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "statusphere",
+			"database_name": "atproto-starter",
 			"database_id": "REPLACE_WITH_D1_DATABASE_ID"
 		}
 	],
@@ -27,11 +27,11 @@
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_SESSIONS",
-			"id": "c44fc97274b84f5a97a8399b1977ad0d"
+			"id": "REPLACE_WITH_KV_OAUTH_SESSIONS_ID"
 		},
 		{
 			"binding": "OAUTH_STATES",
-			"id": "115d8089d9ca4592a3a5e4a7d9146610"
+			"id": "REPLACE_WITH_KV_OAUTH_STATES_ID"
 		}
 	]
 }

@@ -1,17 +1,13 @@
 import { dev } from '$app/environment';
 import { scope } from '@atcute/oauth-node-client';
 
-// writable collections
-export const collections = ['xyz.statusphere.status', 'social.atmo.test.blob'] as const;
+// writable collections — list every NSID the app writes to the user's PDS
+export const collections = [] as const;
 
 export type AllowedCollection = (typeof collections)[number];
 
-// OAuth scope — add scope.blob(), scope.rpc(), etc. as needed
-export const scopes = [
-	'atproto',
-	scope.repo({ collection: [...collections] }),
-	scope.blob({ accept: ['image/*'] })
-];
+// OAuth scope — add scope.blob({ accept: ['image/*'] }), scope.rpc(), etc. as needed
+export const scopes = ['atproto', scope.repo({ collection: [...collections] })];
 
 // set to false to disable signup
 export const ALLOW_SIGNUP = true;

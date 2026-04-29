@@ -15,8 +15,7 @@
 <ThemeToggle class="absolute top-2 left-2" />
 
 <Head
-	title="statusphere"
-	emojiFavicon="🥳"
-	description="svelte + cloudflare workers statusphere"
-	image="/og.png"
+	title="atproto-starter"
+	emojiFavicon="🌱"
+	description="atproto app"
 />

@@ -1,14 +1,8 @@
 import type { ContrailConfig } from '@atmo-dev/contrail';
 
+// Replace `namespace` with your reverse-DNS domain (e.g. mybookmarks.app → app.mybookmarks).
+// Add collections the app indexes — see https://flo-bit.dev/contrail/llms-full.txt
 export const config: ContrailConfig = {
-	namespace: 'statusphere.app',
-	collections: {
-		status: {
-			collection: 'xyz.statusphere.status',
-			queryable: {
-				status: {},
-				createdAt: { type: 'range' }
-			}
-		}
-	}
+	namespace: 'app.example',
+	collections: {}
 };
