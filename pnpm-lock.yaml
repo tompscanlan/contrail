@@ -386,9 +386,6 @@ importers:
         specifier: ^2.4.0
         version: 2.6.1
     devDependencies:
-      '@atmo-dev/contrail-community':
-        specifier: workspace:*
-        version: link:../contrail-community
       '@cloudflare/workers-types':
         specifier: ^4.20250124.0
         version: 4.20260424.1
