@@ -1,8 +1,0 @@
-{
-	"mcpServers": {
-		"lexicon-garden": {
-			"type": "http",
-			"url": "https://lexicon.garden/mcp"
-		}
-	}
-}
