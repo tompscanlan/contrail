@@ -135,3 +135,92 @@ export async function createPdsSession(
     did: body.did,
   };
 }
+
+export interface PdsCreateAccountBody {
+  handle: string;
+  did: string;
+  email: string;
+  password: string;
+  inviteCode?: string;
+}
+
+export interface PdsCreateAccountResult {
+  did: string;
+  handle: string;
+  accessJwt: string;
+  refreshJwt: string;
+}
+
+/** Calls `com.atproto.server.createAccount` on the target PDS using a
+ *  service-auth JWT (signed by the iss DID's verificationMethod). The PDS
+ *  verifies `requester === did` against the published DID-doc, validates the
+ *  invite, and creates the account in deactivated state. */
+export async function pdsCreateAccount(
+  pdsEndpoint: string,
+  serviceAuthJwt: string,
+  body: PdsCreateAccountBody,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<PdsCreateAccountResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.createAccount`;
+  const res = await f(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${serviceAuthJwt}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`createAccount failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as PdsCreateAccountResult;
+}
+
+export interface RecommendedDidCredentials {
+  rotationKeys: string[];
+  verificationMethods: { atproto: string };
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+/** Calls `com.atproto.identity.getRecommendedDidCredentials` on the target PDS
+ *  using the session's accessJwt (returned by `pdsCreateAccount`, NOT a
+ *  service-auth JWT). Returns the DID-doc fields the PDS would self-publish. */
+export async function pdsGetRecommendedDidCredentials(
+  pdsEndpoint: string,
+  accessJwt: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<RecommendedDidCredentials> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.identity.getRecommendedDidCredentials`;
+  const res = await f(url, {
+    headers: { authorization: `Bearer ${accessJwt}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`getRecommendedDidCredentials failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as RecommendedDidCredentials;
+}
+
+/** Calls `com.atproto.server.activateAccount` on the target PDS using the
+ *  session's accessJwt (returned by `pdsCreateAccount`, NOT a service-auth
+ *  JWT). Resolves on success; throws otherwise. */
+export async function pdsActivateAccount(
+  pdsEndpoint: string,
+  accessJwt: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<void> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.activateAccount`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${accessJwt}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`activateAccount failed (${res.status}): ${text}`);
+  }
+}

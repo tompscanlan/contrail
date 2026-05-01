@@ -54,7 +54,7 @@ const P256_N = BigInt(
 );
 const P256_N_HALF = P256_N >> 1n;
 
-async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uint8Array> {
+export async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "jwk",
     privateJwk,
@@ -153,6 +153,71 @@ export async function computeDidPlc(signedOp: SignedGenesisOp): Promise<string> 
   const encoded = encodeDagCbor(signedOp);
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded as BufferSource));
   return "did:plc:" + base32Lower(hash).slice(0, 24);
+}
+
+// ============================================================================
+// Update op construction (subsequent ops chain via `prev`)
+// ============================================================================
+
+export interface UpdateOpInput {
+  prev: string; // CID string of the previous op in the chain
+  rotationKeys: string[];
+  verificationMethodAtproto: string;
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+export interface UnsignedUpdateOp {
+  type: "plc_operation";
+  prev: string;
+  rotationKeys: string[];
+  verificationMethods: { atproto: string };
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+export interface SignedUpdateOp extends UnsignedUpdateOp {
+  sig: string; // base64url, unpadded
+}
+
+export function buildUpdateOp(input: UpdateOpInput): UnsignedUpdateOp {
+  return {
+    type: "plc_operation",
+    prev: input.prev,
+    rotationKeys: input.rotationKeys,
+    verificationMethods: { atproto: input.verificationMethodAtproto },
+    alsoKnownAs: input.alsoKnownAs,
+    services: input.services,
+  };
+}
+
+/** Sign an update op with a rotation key's private JWK. */
+export async function signUpdateOp(
+  unsigned: UnsignedUpdateOp,
+  signerPrivateJwk: JsonWebKey
+): Promise<SignedUpdateOp> {
+  const encoded = encodeDagCbor(unsigned);
+  const sigBytes = await signBytes(signerPrivateJwk, encoded);
+  return { ...unsigned, sig: bytesToB64url(sigBytes) };
+}
+
+/** Compute the CIDv1 for a signed op (genesis or update).
+ *  CIDv1 (0x01) + dag-cbor codec (0x71) + sha2-256 (0x12 0x20) + hash,
+ *  base32-lower with multibase "b" prefix. */
+export async function cidForOp(
+  signedOp: SignedGenesisOp | SignedUpdateOp
+): Promise<string> {
+  const encoded = encodeDagCbor(signedOp);
+  const hash = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", encoded as BufferSource)
+  );
+  const cidBytes = new Uint8Array(4 + hash.length);
+  cidBytes[0] = 0x01;
+  cidBytes[1] = 0x71;
+  cidBytes[2] = 0x12;
+  cidBytes[3] = 0x20;
+  cidBytes.set(hash, 4);
+  return "b" + base32Lower(cidBytes);
 }
 
 /** Submit a signed genesis op to the PLC directory. */
