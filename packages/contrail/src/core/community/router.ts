@@ -24,6 +24,7 @@ import {
   pdsCreateAccount,
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
+  pdsCreateAppPassword,
 } from "./pds";
 import {
   ProvisionOrchestrator,
@@ -236,6 +237,7 @@ export function registerCommunityRoutes(
           password?: string;
           inviteCode?: string;
           pdsEndpoint?: string;
+          rotationKey?: string;
         }
       | null;
     if (!body?.handle || !body.email || !body.password || !body.pdsEndpoint) {
@@ -243,6 +245,18 @@ export function registerCommunityRoutes(
         {
           error: "InvalidRequest",
           message: "handle, email, password, pdsEndpoint required",
+        },
+        400
+      );
+    }
+    if (
+      body.rotationKey !== undefined &&
+      !(typeof body.rotationKey === "string" && body.rotationKey.startsWith("did:key:z"))
+    ) {
+      return c.json(
+        {
+          error: "InvalidRequest",
+          message: "rotationKey must be a did:key:z…",
         },
         400
       );
@@ -266,6 +280,7 @@ export function registerCommunityRoutes(
         email: body.email,
         password: body.password,
         inviteCode: body.inviteCode,
+        rotationKey: body.rotationKey,
       });
     } catch (err: any) {
       return c.json(
@@ -276,6 +291,8 @@ export function registerCommunityRoutes(
 
     // Hand the already-encrypted password from the provision_attempts row to
     // the communities row, keeping a single source of truth for the credential.
+    // The custody_mode also flows from the attempt row so the route never
+    // fabricates a default — every provisioned community is explicitly tagged.
     const attempt = await community.getProvisionAttempt(attemptId);
     if (!attempt?.encryptedPassword) {
       return c.json(
@@ -292,6 +309,7 @@ export function registerCommunityRoutes(
       pdsEndpoint: body.pdsEndpoint,
       handle: body.handle,
       appPasswordEncrypted: attempt.encryptedPassword,
+      custodyMode: attempt.custodyMode,
       createdBy: sa.issuer,
     });
 
@@ -304,7 +322,15 @@ export function registerCommunityRoutes(
       serviceDid: spaceServiceDid,
     });
 
-    return c.json({ communityDid: result.did, status: result.status });
+    const responseBody: {
+      communityDid: string;
+      status: string;
+      rootCredentials?: { handle: string; password: string; recoveryHint: string };
+    } = { communityDid: result.did, status: result.status };
+    if (result.rootCredentials) {
+      responseBody.rootCredentials = result.rootCredentials;
+    }
+    return c.json(responseBody);
   });
 
   app.post(`/xrpc/${NS}.delete`, auth, async (c) => {
@@ -1149,6 +1175,10 @@ function buildOrchestrator(
       pdsGetRecommendedDidCredentials(pdsUrl, accessJwt, fetchOpts),
     activateAccount: ({ pdsUrl, accessJwt }) =>
       pdsActivateAccount(pdsUrl, accessJwt, fetchOpts),
+    createAppPassword: async ({ pdsUrl, accessJwt, name }) => {
+      const r = await pdsCreateAppPassword(pdsUrl, accessJwt, name, fetchOpts);
+      return { password: r.password };
+    },
   };
 
   return new ProvisionOrchestrator({ adapter, cipher, plc, pds, pdsDid });

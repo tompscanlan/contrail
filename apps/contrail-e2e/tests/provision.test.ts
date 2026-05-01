@@ -27,6 +27,8 @@ import {
   pdsCreateAccount,
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
+  pdsCreateAppPassword,
+  generateKeyPair,
   createPdsSession,
   submitGenesisOp,
   getLastOpCid,
@@ -85,44 +87,53 @@ describe("ProvisionOrchestrator devnet e2e", () => {
     await cleanupSchema?.();
   });
 
+  // Adapt our bare module-level functions to the orchestrator's wrapper
+  // interfaces. Shared by the managed and self-sovereign tests so they hit
+  // the same live PDS surface (Task 16 added createAppPassword to PdsClient).
+  const pdsClient: PdsClient = {
+    createAccount: ({ pdsUrl, serviceAuthJwt, body }) =>
+      pdsCreateAccount(pdsUrl, serviceAuthJwt, body),
+    getRecommendedDidCredentials: ({ pdsUrl, accessJwt }) =>
+      pdsGetRecommendedDidCredentials(pdsUrl, accessJwt),
+    activateAccount: ({ pdsUrl, accessJwt }) =>
+      pdsActivateAccount(pdsUrl, accessJwt),
+    createAppPassword: ({ pdsUrl, accessJwt, name }) =>
+      pdsCreateAppPassword(pdsUrl, accessJwt, name),
+  };
+
+  const plcClient: PlcClient = {
+    submit: (did, op) => submitGenesisOp(PLC_URL, did, op as any),
+    getLastOpCid: (did) => getLastOpCid(PLC_URL, did),
+  };
+
+  /** Mint a single-use invite via the PDS admin API. Shared helper for both
+   *  the managed and self-sovereign tests. */
+  async function mintInvite(): Promise<string> {
+    const inviteRes = await fetch(
+      `${PDS_URL}/xrpc/com.atproto.server.createInviteCode`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Basic ${Buffer.from(
+            `admin:${PDS_ADMIN_PASSWORD}`,
+          ).toString("base64")}`,
+        },
+        body: JSON.stringify({ useCount: 1 }),
+      },
+    );
+    if (!inviteRes.ok) {
+      throw new Error(
+        `createInviteCode failed (${inviteRes.status}): ${await inviteRes.text()}`,
+      );
+    }
+    return ((await inviteRes.json()) as { code: string }).code;
+  }
+
   it(
     "provisions a community: genesis → createAccount → DID-doc update → activate",
     async () => {
-      // Adapt our bare module-level functions to the orchestrator's wrapper interfaces.
-      const pdsClient: PdsClient = {
-        createAccount: ({ pdsUrl, serviceAuthJwt, body }) =>
-          pdsCreateAccount(pdsUrl, serviceAuthJwt, body),
-        getRecommendedDidCredentials: ({ pdsUrl, accessJwt }) =>
-          pdsGetRecommendedDidCredentials(pdsUrl, accessJwt),
-        activateAccount: ({ pdsUrl, accessJwt }) =>
-          pdsActivateAccount(pdsUrl, accessJwt),
-      };
-
-      const plcClient: PlcClient = {
-        submit: (did, op) => submitGenesisOp(PLC_URL, did, op as any),
-        getLastOpCid: (did) => getLastOpCid(PLC_URL, did),
-      };
-
-      // Mint an invite code via the PDS admin API.
-      const inviteRes = await fetch(
-        `${PDS_URL}/xrpc/com.atproto.server.createInviteCode`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: `Basic ${Buffer.from(
-              `admin:${PDS_ADMIN_PASSWORD}`,
-            ).toString("base64")}`,
-          },
-          body: JSON.stringify({ useCount: 1 }),
-        },
-      );
-      if (!inviteRes.ok) {
-        throw new Error(
-          `createInviteCode failed (${inviteRes.status}): ${await inviteRes.text()}`,
-        );
-      }
-      const { code: inviteCode } = (await inviteRes.json()) as { code: string };
+      const inviteCode = await mintInvite();
 
       // Unique handle/email per run — devnet keeps state across runs.
       const suffix = `${Date.now().toString(36)}${Math.random()
@@ -167,11 +178,144 @@ describe("ProvisionOrchestrator devnet e2e", () => {
       expect(row!.activatedAt).toBeTruthy();
       expect(row!.lastError).toBeNull();
 
+      // Mode contrast: managed never returns rootCredentials and persists
+      // custodyMode='managed'. Locks in the direction the self-sovereign test
+      // contrasts against.
+      expect(row!.custodyMode).toBe("managed");
+      expect(result.rootCredentials).toBeUndefined();
+
       // Prove the account is *actually* active on the PDS by logging in with
       // the same credentials. createPdsSession throws if the PDS rejects.
       const session = await createPdsSession(PDS_URL, handle, password);
       expect(session.did).toBe(result.did);
       expect(session.accessJwt).toBeTruthy();
+    },
+    30_000,
+  );
+
+  it(
+    "provisions a self-sovereign community: caller holds rotation key, contrail mints app password",
+    async () => {
+      // Caller-held rotation keypair. The private JWK never leaves this test —
+      // only callerRotation.publicDidKey is passed to the orchestrator. That's
+      // the negative invariant we assert below: no encrypted_* column on the
+      // persisted row contains the caller's did:key after decrypt.
+      const callerRotation = await generateKeyPair();
+
+      const inviteCode = await mintInvite();
+
+      // Keep handle short — devnet caps the local label at 18 chars.
+      // `ss-` (3) + 8-char suffix = 11 chars on the local label.
+      const suffix = `${Date.now().toString(36).slice(-5)}${Math.random()
+        .toString(36)
+        .slice(2, 5)}`;
+      const handle = `ss-${suffix}${HANDLE_DOMAIN}`;
+      const email = `${suffix}@devnet.test`;
+      const password = `pw-${suffix}`;
+      const attemptId = randomUUID();
+
+      const orch = new ProvisionOrchestrator({
+        adapter,
+        cipher,
+        plc: plcClient,
+        pds: pdsClient,
+        pdsDid,
+      });
+
+      const result = await orch.provision({
+        attemptId,
+        pdsEndpoint: PDS_URL,
+        handle,
+        email,
+        password,
+        inviteCode,
+        rotationKey: callerRotation.publicDidKey,
+      });
+
+      // Result-shape assertions: status activated; rootCredentials returned
+      // with the user's *root* password, not the minted app password.
+      expect(result.attemptId).toBe(attemptId);
+      expect(result.did).toMatch(/^did:plc:[a-z2-7]{24}$/);
+      expect(result.status).toBe("activated");
+      expect(result.rootCredentials).toBeDefined();
+      expect(result.rootCredentials!.handle).toBe(handle);
+      expect(result.rootCredentials!.password).toBe(password);
+      expect(typeof result.rootCredentials!.recoveryHint).toBe("string");
+      expect(result.rootCredentials!.recoveryHint.length).toBeGreaterThan(0);
+
+      // Persisted-row assertions: self-sovereign mode persists an *encrypted
+      // app password* — never the user's root password. Contrail's rotation
+      // key is the SUBORDINATE (rotationKeys[1]); the caller's did:key is
+      // rotationKeys[0] in the genesis op and lives only in PLC, never in
+      // any encrypted_* column.
+      const row = await adapter.getProvisionAttempt(attemptId);
+      expect(row).not.toBeNull();
+      expect(row!.status).toBe("activated");
+      expect(row!.did).toBe(result.did);
+      expect(row!.handle).toBe(handle);
+      expect(row!.custodyMode).toBe("self_sovereign");
+      expect(row!.encryptedSigningKey).toBeTruthy();
+      expect(row!.encryptedRotationKey).toBeTruthy();
+      expect(row!.encryptedPassword).toBeTruthy();
+      expect(row!.activatedAt).toBeTruthy();
+      expect(row!.lastError).toBeNull();
+
+      // Decrypt the persisted password — it must be the *minted app password*,
+      // distinct from the user's root password we supplied.
+      const decryptedAppPassword = await cipher.decryptString(
+        row!.encryptedPassword!,
+      );
+      expect(decryptedAppPassword).not.toBe(password);
+      expect(decryptedAppPassword.length).toBeGreaterThan(0);
+
+      // Decrypt the persisted rotation JWK — it must be Contrail's subordinate
+      // key (a fresh P-256 keypair), NOT the caller's. We assert NOT-equal on
+      // the JWK shape, including the `d` (private) coordinate which the caller
+      // never sent.
+      const decryptedRotationJwk = JSON.parse(
+        await cipher.decryptString(row!.encryptedRotationKey!),
+      ) as { kty?: string; crv?: string; x?: string; y?: string; d?: string };
+      expect(decryptedRotationJwk.kty).toBe("EC");
+      expect(decryptedRotationJwk.crv).toBe("P-256");
+      // The caller's private `d` coordinate must never appear in Contrail's
+      // persistence — the strongest single-bit invariant of self-sovereign mode.
+      expect(decryptedRotationJwk.d).not.toBe(callerRotation.privateJwk.d);
+      // The public x/y must also differ — the persisted rotation key is a
+      // subordinate Contrail-generated key, not a re-derivation of the caller's.
+      expect(decryptedRotationJwk.x).not.toBe(callerRotation.privateJwk.x);
+      expect(decryptedRotationJwk.y).not.toBe(callerRotation.privateJwk.y);
+
+      // Negative invariant: the caller's public did:key string must NOT appear
+      // inside ANY encrypted column after decryption. Encrypted_signing_key
+      // is a JWK; encrypted_rotation_key is the subordinate JWK; the password
+      // is opaque — none of them should contain the caller's did:key.
+      const decryptedSigningKey = await cipher.decryptString(
+        row!.encryptedSigningKey!,
+      );
+      const callerDidKey = callerRotation.publicDidKey;
+      expect(decryptedSigningKey.indexOf(callerDidKey)).toBe(-1);
+      expect(
+        await cipher
+          .decryptString(row!.encryptedRotationKey!)
+          .then((s) => s.indexOf(callerDidKey)),
+      ).toBe(-1);
+      expect(decryptedAppPassword.indexOf(callerDidKey)).toBe(-1);
+
+      // Prove the *minted* app password works against the live PDS.
+      // createPdsSession throws if the PDS rejects.
+      const appSession = await createPdsSession(
+        PDS_URL,
+        handle,
+        decryptedAppPassword,
+      );
+      expect(appSession.did).toBe(result.did);
+      expect(appSession.accessJwt).toBeTruthy();
+
+      // And the user's root password also still works — PDS supports multiple
+      // credentials per account, so the caller's root creds remain valid.
+      const rootSession = await createPdsSession(PDS_URL, handle, password);
+      expect(rootSession.did).toBe(result.did);
+      expect(rootSession.accessJwt).toBeTruthy();
     },
     30_000,
   );

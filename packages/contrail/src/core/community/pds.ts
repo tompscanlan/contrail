@@ -282,3 +282,36 @@ export async function pdsActivateAccount(
     throw new Error(`activateAccount failed (${res.status}): ${text}`);
   }
 }
+
+export interface PdsCreateAppPasswordResult {
+  name: string;
+  password: string;
+  createdAt: string;
+}
+
+/** Calls `com.atproto.server.createAppPassword` on the target PDS using the
+ *  session's accessJwt. Returns the freshly minted app password. The PDS
+ *  refuses to mint privileged passwords by default — we keep `privileged: false`
+ *  so the credential can be revoked without affecting the root account. */
+export async function pdsCreateAppPassword(
+  pdsEndpoint: string,
+  accessJwt: string,
+  name: string,
+  opts: { fetch?: typeof fetch; privileged?: boolean } = {}
+): Promise<PdsCreateAppPasswordResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.createAppPassword`;
+  const res = await f(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${accessJwt}`,
+    },
+    body: JSON.stringify({ name, privileged: opts.privileged ?? false }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`createAppPassword failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as PdsCreateAppPasswordResult;
+}

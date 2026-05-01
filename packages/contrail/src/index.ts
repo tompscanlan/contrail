@@ -133,6 +133,8 @@ export {
   pdsCreateAccount,
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
+  pdsCreateAppPassword,
+  generateKeyPair,
   submitGenesisOp,
   getLastOpCid,
   ProvisionOrchestrator,

@@ -25,6 +25,7 @@ import type { RecommendedDidCredentials } from "./pds";
 import { mintServiceAuthJwt } from "./service-auth";
 import type { CommunityAdapter } from "./adapter";
 import type { CredentialCipher } from "./credentials";
+import type { CustodyMode } from "./types";
 
 export interface PlcClient {
   submit(did: string, op: any): Promise<unknown>;
@@ -55,6 +56,14 @@ export interface PdsClient {
     accessJwt: string;
   }): Promise<RecommendedDidCredentials>;
   activateAccount(input: { pdsUrl: string; accessJwt: string }): Promise<void>;
+  /** Mints a revocable app password on the freshly-activated account. Used by
+   *  the self-sovereign custody mode so Contrail keeps publishing authority
+   *  without holding the account's root password. */
+  createAppPassword(input: {
+    pdsUrl: string;
+    accessJwt: string;
+    name: string;
+  }): Promise<{ password: string }>;
 }
 
 export interface ProvisionOrchestratorDeps {
@@ -73,12 +82,27 @@ export interface ProvisionInput {
   email: string;
   password: string;
   inviteCode?: string;
+  /** Optional caller-supplied rotation public key (did:key:z…). When present,
+   *  switches the flow to self-sovereign custody: the caller's key occupies
+   *  rotationKeys[0] in the genesis op, Contrail's generated key is the
+   *  subordinate, and after activation Contrail mints a revocable app password
+   *  (via createAppPassword) for ongoing publishing instead of persisting the
+   *  user's account password. */
+  rotationKey?: string;
 }
 
 export interface ProvisionResult {
   attemptId: string;
   did: string;
   status: "activated";
+  /** Only present in self-sovereign custody mode. The caller is expected to
+   *  store these — Contrail does NOT retain the user's root password once the
+   *  app password has been minted. */
+  rootCredentials?: {
+    handle: string;
+    password: string;
+    recoveryHint: string;
+  };
 }
 
 export class ProvisionOrchestrator {
@@ -87,18 +111,32 @@ export class ProvisionOrchestrator {
   async provision(input: ProvisionInput): Promise<ProvisionResult> {
     const { adapter, cipher, plc, pds, pdsDid } = this.deps;
 
-    // Step 0: keys + persist
+    const custodyMode: CustodyMode = input.rotationKey ? "self_sovereign" : "managed";
+    if (input.rotationKey !== undefined && !isDidKeyZ(input.rotationKey)) {
+      throw new Error(
+        `rotationKey must be a did:key:z… string (got: ${input.rotationKey.slice(0, 24)}…)`
+      );
+    }
+
+    // Step 0: keys + persist. In self-sovereign mode, Contrail still generates
+    // a SUBORDINATE rotation key (rotationKeys[1]) so it retains a path to
+    // submit subsequent PLC ops. The caller's key sits at rotationKeys[0].
     const signingKey = await generateKeyPair();
-    const rotationKey = await generateKeyPair();
+    const contrailRotation = await generateKeyPair();
     const encryptedSigning = await cipher.encrypt(
       JSON.stringify(signingKey.privateJwk)
     );
     const encryptedRotation = await cipher.encrypt(
-      JSON.stringify(rotationKey.privateJwk)
+      JSON.stringify(contrailRotation.privateJwk)
     );
 
+    const genesisRotationKeys =
+      custodyMode === "self_sovereign"
+        ? [input.rotationKey!, contrailRotation.publicDidKey]
+        : [contrailRotation.publicDidKey];
+
     const unsigned = buildGenesisOp({
-      rotationKeys: [rotationKey.publicDidKey],
+      rotationKeys: genesisRotationKeys,
       verificationMethodAtproto: signingKey.publicDidKey,
       alsoKnownAs: [`at://${input.handle}`],
       services: {
@@ -108,7 +146,10 @@ export class ProvisionOrchestrator {
         },
       },
     });
-    const signedGenesis = await signGenesisOp(unsigned, rotationKey.privateJwk);
+    // Genesis is signed with Contrail's rotation key — it's a valid signer in
+    // both modes (rotationKeys[0] in managed, rotationKeys[1] in self-sovereign;
+    // either way, it's listed so PLC accepts the signature).
+    const signedGenesis = await signGenesisOp(unsigned, contrailRotation.privateJwk);
     const did = await computeDidPlc(signedGenesis);
 
     await adapter.createProvisionAttempt({
@@ -120,6 +161,9 @@ export class ProvisionOrchestrator {
       inviteCode: input.inviteCode ?? null,
       encryptedSigningKey: encryptedSigning,
       encryptedRotationKey: encryptedRotation,
+      custodyMode,
+      callerRotationDidKey:
+        custodyMode === "self_sovereign" ? input.rotationKey! : null,
     });
 
     // Step 1: PLC genesis
@@ -159,10 +203,17 @@ export class ProvisionOrchestrator {
           inviteCode: input.inviteCode,
         },
       });
-      const encryptedPassword = await cipher.encrypt(input.password);
-      await adapter.updateProvisionStatus(input.attemptId, "account_created", {
-        encryptedPassword,
-      });
+      // Managed mode persists the user's account password as the publishing
+      // credential. Self-sovereign mode does NOT persist it here — we'll mint
+      // a separate app password after activation and persist that instead.
+      if (custodyMode === "managed") {
+        const encryptedPassword = await cipher.encrypt(input.password);
+        await adapter.updateProvisionStatus(input.attemptId, "account_created", {
+          encryptedPassword,
+        });
+      } else {
+        await adapter.updateProvisionStatus(input.attemptId, "account_created");
+      }
     } catch (err: any) {
       await adapter.updateProvisionStatus(input.attemptId, "genesis_submitted", {
         lastError: `createAccount: ${err.message}`,
@@ -175,10 +226,48 @@ export class ProvisionOrchestrator {
       did,
       pdsEndpoint: input.pdsEndpoint,
       accessJwt: session.accessJwt,
-      rotationPrivateJwk: rotationKey.privateJwk,
-      rotationPublicDidKey: rotationKey.publicDidKey,
+      rotationPrivateJwk: contrailRotation.privateJwk,
+      rotationPublicDidKey: contrailRotation.publicDidKey,
+      callerRotationPublicDidKey:
+        custodyMode === "self_sovereign" ? input.rotationKey! : null,
       prevCid: await cidForOp(signedGenesis),
     });
+
+    // Self-sovereign post-step: mint a revocable app password so we can
+    // publish without holding the user's root password. Failure here leaves
+    // the row at status=activated (the account IS activated upstream) with a
+    // last_error breadcrumb; the caller's rootCredentials are still useful
+    // and the failure is recoverable by an out-of-band reauth.
+    if (custodyMode === "self_sovereign") {
+      try {
+        const minted = await pds.createAppPassword({
+          pdsUrl: input.pdsEndpoint,
+          accessJwt: session.accessJwt,
+          name: `contrail-${input.attemptId}`,
+        });
+        const encryptedPassword = await cipher.encrypt(minted.password);
+        await adapter.updateProvisionStatus(input.attemptId, "activated", {
+          encryptedPassword,
+        });
+      } catch (err: any) {
+        await adapter.updateProvisionStatus(input.attemptId, "activated", {
+          lastError: `createAppPassword: ${err.message}`,
+        });
+        throw err;
+      }
+
+      return {
+        attemptId: input.attemptId,
+        did,
+        status: "activated",
+        rootCredentials: {
+          handle: input.handle,
+          password: input.password,
+          recoveryHint:
+            "store this — Contrail does not retain it",
+        },
+      };
+    }
 
     return { attemptId: input.attemptId, did, status: "activated" };
   }
@@ -219,6 +308,7 @@ export class ProvisionOrchestrator {
       accessJwt,
       rotationPrivateJwk,
       rotationPublicDidKey,
+      callerRotationPublicDidKey: row.callerRotationDidKey,
       prevCid,
     });
   }
@@ -235,6 +325,11 @@ export class ProvisionOrchestrator {
     accessJwt: string;
     rotationPrivateJwk: JsonWebKey;
     rotationPublicDidKey: string;
+    /** Caller-supplied rotation public did:key (self-sovereign mode). When
+     *  present, kept at index 0 of the update op's rotationKeys so the caller
+     *  retains highest-priority rotation authority on the DID. Null/undefined
+     *  for managed mode. */
+    callerRotationPublicDidKey?: string | null;
     prevCid: string;
   }): Promise<void> {
     const { adapter, plc, pds } = this.deps;
@@ -245,11 +340,12 @@ export class ProvisionOrchestrator {
         pdsUrl: args.pdsEndpoint,
         accessJwt: args.accessJwt,
       });
+      const baseRotationKeys = args.callerRotationPublicDidKey
+        ? [args.callerRotationPublicDidKey, args.rotationPublicDidKey]
+        : [args.rotationPublicDidKey];
       const updatedRotationKeys = [
-        args.rotationPublicDidKey,
-        ...recommended.rotationKeys.filter(
-          (k) => k !== args.rotationPublicDidKey
-        ),
+        ...baseRotationKeys,
+        ...recommended.rotationKeys.filter((k) => !baseRotationKeys.includes(k)),
       ];
       const unsignedUpdate = buildUpdateOp({
         prev: args.prevCid,
@@ -285,6 +381,13 @@ export class ProvisionOrchestrator {
       throw err;
     }
   }
+}
+
+/** Cheap structural check for did:key:z multibase identifiers. The orchestrator
+ *  trusts the caller's submitted rotation key beyond this; PLC will reject any
+ *  malformed key when the genesis op is submitted. */
+function isDidKeyZ(s: string): boolean {
+  return typeof s === "string" && s.startsWith("did:key:z") && s.length > 12;
 }
 
 /** Re-derive the did:key form of a P-256 public key from the private JWK.

@@ -28,6 +28,7 @@ export {
   pdsCreateAccount,
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
+  pdsCreateAppPassword,
 } from "./pds";
 export type {
   PdsCreateAccountBody,
