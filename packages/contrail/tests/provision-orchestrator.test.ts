@@ -86,6 +86,30 @@ describe("ProvisionOrchestrator", () => {
     expect(row?.encryptedPassword).toBeTruthy();
   });
 
+  it("seeds the community_sessions cache with the createAccount JWTs after activation", async () => {
+    const orch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc: mockPlc(),
+      pds: mockPds(),
+      pdsDid: "did:web:pds.test",
+    });
+
+    const result = await orch.provision({
+      attemptId: "a1",
+      pdsEndpoint: "https://pds.test",
+      handle: "h.test",
+      email: "h@x.test",
+      password: "p",
+      inviteCode: "code",
+    });
+
+    const cached = await adapter.getSession(result.did);
+    expect(cached).not.toBeNull();
+    expect(cached?.accessJwt).toBe("AT");
+    expect(cached?.refreshJwt).toBe("RT");
+  });
+
   it("persists status=genesis_submitted before createAccount runs", async () => {
     let createCalled = false;
     const pds = {

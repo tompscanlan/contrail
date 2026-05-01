@@ -316,6 +316,19 @@ describe("ProvisionOrchestrator devnet e2e", () => {
       const rootSession = await createPdsSession(PDS_URL, handle, password);
       expect(rootSession.did).toBe(result.did);
       expect(rootSession.accessJwt).toBeTruthy();
+
+      // PLC-log assertion (H2): the post-activation update op must keep the
+      // caller's did:key at rotationKeys[0]. Without this, contrail's
+      // subordinate would silently take rotation priority and the caller
+      // would lose self-sovereign recovery authority.
+      const logRes = await fetch(`${PLC_URL}/${result.did}/log`);
+      expect(logRes.ok).toBe(true);
+      const log = (await logRes.json()) as Array<{
+        rotationKeys: string[];
+      }>;
+      expect(log.length).toBeGreaterThanOrEqual(2);
+      const lastOp = log[log.length - 1]!;
+      expect(lastOp.rotationKeys[0]).toBe(callerRotation.publicDidKey);
     },
     30_000,
   );
@@ -476,9 +489,8 @@ describe("community.provision + putRecord via XRPC route (devnet)", () => {
 
       // The orchestrator never calls createSession during provision — it
       // gets accessJwt + refreshJwt directly from the createAccount response
-      // and writes them through to the community_sessions cache (or, in the
-      // current implementation, leaves the cache empty until first publish).
-      // Either way, no createSession should have hit the PDS yet.
+      // and seeds the community_sessions cache before returning, so the first
+      // publish hits a warm cache.
       const provisionCreateSessionCount =
         createSessionCount - baselineCreateSessionCount;
       expect(provisionCreateSessionCount).toBe(0);
@@ -524,11 +536,11 @@ describe("community.provision + putRecord via XRPC route (devnet)", () => {
         new RegExp(`^at://${communityDid}/${POST_NSID}/`),
       );
 
-      // Exactly one createSession across the whole provision + 2 publishes.
-      // First putRecord misses the cache; second hits the 30s-skew cache.
+      // Zero createSession across the whole flow: provision pre-warms the
+      // cache, then both publishes hit the 30s-skew cache.
       const publishesCreateSessionCount =
         createSessionCount - baselineCreateSessionCount;
-      expect(publishesCreateSessionCount).toBe(1);
+      expect(publishesCreateSessionCount).toBe(0);
     },
     60_000,
   );

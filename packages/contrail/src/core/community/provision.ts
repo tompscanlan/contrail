@@ -22,6 +22,7 @@ import {
   jwkToDidKey,
 } from "./plc";
 import type { RecommendedDidCredentials } from "./pds";
+import { decodeJwtExp } from "./pds";
 import { mintServiceAuthJwt } from "./service-auth";
 import type { CommunityAdapter } from "./adapter";
 import type { CredentialCipher } from "./credentials";
@@ -231,6 +232,15 @@ export class ProvisionOrchestrator {
       callerRotationPublicDidKey:
         custodyMode === "self_sovereign" ? input.rotationKey! : null,
       prevCid: await cidForOp(signedGenesis),
+    });
+
+    // Seed the session cache with the JWTs createAccount returned, so the
+    // first publish doesn't waste a createSession round-trip. ensureSession
+    // refreshes or falls back to the stored password as the JWTs age out.
+    await adapter.upsertSession(did, {
+      accessJwt: session.accessJwt,
+      refreshJwt: session.refreshJwt,
+      accessExp: decodeJwtExp(session.accessJwt),
     });
 
     // Self-sovereign post-step: mint a revocable app password so we can
