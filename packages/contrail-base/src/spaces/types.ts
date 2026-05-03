@@ -52,6 +52,16 @@ export interface AuthorityConfig {
   signing?: CredentialKeyMaterial;
   /** Credential lifetime in ms. Defaults to {@link DEFAULT_CREDENTIAL_TTL_MS}. */
   credentialTtlMs?: number;
+  /** Membership-manifest lifetime in ms. Manifests carry a user's full
+   *  member-of list and let appviews filter unioned queries without syncing
+   *  the authority's full member tables. Same key material as credentials.
+   *  Defaults to {@link DEFAULT_MANIFEST_TTL_MS}. */
+  manifestTtlMs?: number;
+  /** Maximum number of spaces returned in a manifest. The endpoint paginates
+   *  through `listSpaces` up to this cap; users with more spaces get a
+   *  truncated manifest (the remainder won't be unioned in queries). Defaults
+   *  to 500. */
+  manifestMaxSpaces?: number;
 }
 
 /** Configuration for the **record host** role: stores per-space records and

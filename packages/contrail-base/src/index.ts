@@ -40,6 +40,9 @@ export * from "./spaces/acl";
 // Credentials
 export * from "./spaces/credentials";
 
+// Membership manifests
+export * from "./spaces/manifest";
+
 // Binding + key resolution
 export * from "./spaces/binding";
 

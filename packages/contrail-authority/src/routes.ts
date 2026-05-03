@@ -21,9 +21,11 @@ import {
   checkInviteReadGrant,
   decodeUnverifiedClaims,
   DEFAULT_CREDENTIAL_TTL_MS,
+  DEFAULT_MANIFEST_TTL_MS,
   extractInviteToken,
   hashInviteToken,
   issueCredential,
+  issueMembershipManifest,
   nextTid,
   verifyCredential,
 } from "@atmo-dev/contrail-base";
@@ -323,6 +325,57 @@ export function registerAuthorityRoutes(
       signing
     );
     return c.json({ credential, expiresAt });
+  });
+
+  // ---- Membership manifest ----
+  //
+  // Issues a signed list of every space the caller is a member of (or owns)
+  // according to this authority. Appviews carry it on inbound requests so
+  // unioned listRecords queries can be filtered without syncing the full
+  // member list. Same key material as credentials, different payload.
+
+  app.post(`/xrpc/${SPACE}.getMembershipManifest`, auth, async (c) => {
+    if (!authorityConfig.signing) {
+      return c.json(
+        { error: "NotImplemented", message: "authority is not configured to sign manifests" },
+        501
+      );
+    }
+    const sa = getAuth(c);
+    const cap = authorityConfig.manifestMaxSpaces ?? 500;
+
+    // Page through listSpaces — owner-or-member union — up to the cap.
+    const seen = new Set<string>();
+    const drain = async (scope: "owner" | "member"): Promise<void> => {
+      let cursor: string | undefined;
+      while (seen.size < cap) {
+        const result = await authority.listSpaces({
+          ...(scope === "owner" ? { ownerDid: sa.issuer } : { memberDid: sa.issuer }),
+          cursor,
+          limit: Math.min(200, cap - seen.size),
+        });
+        for (const s of result.spaces) {
+          if (s.deletedAt == null) seen.add(s.uri);
+          if (seen.size >= cap) break;
+        }
+        if (!result.cursor || seen.size >= cap) break;
+        cursor = result.cursor;
+      }
+    };
+    await drain("owner");
+    if (seen.size < cap) await drain("member");
+
+    const ttl = authorityConfig.manifestTtlMs ?? DEFAULT_MANIFEST_TTL_MS;
+    const { manifest, expiresAt } = await issueMembershipManifest(
+      {
+        iss: authorityConfig.serviceDid,
+        sub: sa.issuer,
+        spaces: [...seen],
+        ttlMs: ttl,
+      },
+      authorityConfig.signing
+    );
+    return c.json({ manifest, expiresAt, truncated: seen.size >= cap });
   });
 }
 
