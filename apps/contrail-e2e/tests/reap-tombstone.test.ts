@@ -25,6 +25,7 @@ import {
   CommunityAdapter,
   CredentialCipher,
   ProvisionOrchestrator,
+  generateKeyPair,
   initCommunitySchema,
   pdsCreateAccount,
   pdsGetRecommendedDidCredentials,
@@ -127,6 +128,8 @@ describe("reap tombstone CID matches live PLC log/last (M6)", () => {
       const password = `pw-${suffix}`;
       const attemptId = randomUUID();
 
+      const callerRotation = await generateKeyPair();
+
       const orch = new ProvisionOrchestrator({
         adapter,
         cipher,
@@ -141,6 +144,7 @@ describe("reap tombstone CID matches live PLC log/last (M6)", () => {
         email,
         password,
         inviteCode,
+        rotationKey: callerRotation.publicDidKey,
       });
       expect(result.status).toBe("activated");
       const did = result.did;

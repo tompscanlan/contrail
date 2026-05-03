@@ -131,69 +131,6 @@ describe("ProvisionOrchestrator devnet e2e", () => {
   }
 
   it(
-    "provisions a community: genesis → createAccount → DID-doc update → activate",
-    async () => {
-      const inviteCode = await mintInvite();
-
-      // Unique handle/email per run — devnet keeps state across runs.
-      const suffix = `${Date.now().toString(36)}${Math.random()
-        .toString(36)
-        .slice(2, 6)}`;
-      const handle = `prov-${suffix}${HANDLE_DOMAIN}`;
-      const email = `${suffix}@devnet.test`;
-      const password = `pw-${suffix}`;
-      const attemptId = randomUUID();
-
-      const orch = new ProvisionOrchestrator({
-        adapter,
-        cipher,
-        plc: plcClient,
-        pds: pdsClient,
-        pdsDid,
-      });
-
-      const result = await orch.provision({
-        attemptId,
-        pdsEndpoint: PDS_URL,
-        handle,
-        email,
-        password,
-        inviteCode,
-      });
-
-      // Result-shape assertions.
-      expect(result.attemptId).toBe(attemptId);
-      expect(result.did).toMatch(/^did:plc:[a-z2-7]{24}$/);
-      expect(result.status).toBe("activated");
-
-      // Persisted-row assertions.
-      const row = await adapter.getProvisionAttempt(attemptId);
-      expect(row).not.toBeNull();
-      expect(row!.status).toBe("activated");
-      expect(row!.did).toBe(result.did);
-      expect(row!.handle).toBe(handle);
-      expect(row!.encryptedSigningKey).toBeTruthy();
-      expect(row!.encryptedRotationKey).toBeTruthy();
-      expect(row!.encryptedPassword).toBeTruthy();
-      expect(row!.activatedAt).toBeTruthy();
-      expect(row!.lastError).toBeNull();
-
-      // Mode contrast: managed never returns rootCredentials and persists
-      // custodyMode='managed'. Locks in the direction the self-sovereign test
-      // contrasts against.
-      expect(row!.custodyMode).toBe("managed");
-      expect(result.rootCredentials).toBeUndefined();
-
-      // Prove the account is *actually* active on the PDS by logging in with
-      // the same credentials. createPdsSession throws if the PDS rejects.
-      const session = await createPdsSession(PDS_URL, handle, password);
-      expect(session.did).toBe(result.did);
-      expect(session.accessJwt).toBeTruthy();
-    },
-    30_000,
-  );
-
-  it(
     "provisions a self-sovereign community: caller holds rotation key, contrail mints app password",
     async () => {
       // Caller-held rotation keypair. The private JWK never leaves this test —
@@ -253,7 +190,6 @@ describe("ProvisionOrchestrator devnet e2e", () => {
       expect(row!.status).toBe("activated");
       expect(row!.did).toBe(result.did);
       expect(row!.handle).toBe(handle);
-      expect(row!.custodyMode).toBe("self_sovereign");
       expect(row!.encryptedSigningKey).toBeTruthy();
       expect(row!.encryptedRotationKey).toBeTruthy();
       expect(row!.encryptedPassword).toBeTruthy();
@@ -465,6 +401,8 @@ describe("community.provision + putRecord via XRPC route (devnet)", () => {
       const email = `${suffix}@devnet.test`;
       const password = `pw-${suffix}`;
 
+      const callerRotation = await generateKeyPair();
+
       const baselineCreateSessionCount = createSessionCount;
 
       // ---- POST /xrpc/${NS}.provision -----------------------------------
@@ -475,6 +413,7 @@ describe("community.provision + putRecord via XRPC route (devnet)", () => {
           password,
           inviteCode,
           pdsEndpoint: PDS_URL,
+          rotationKey: callerRotation.publicDidKey,
         },
       });
       const provText = await provRes.clone().text();
