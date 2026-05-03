@@ -16,6 +16,17 @@ export * from "@atmo-dev/contrail-base";
 export * from "@atmo-dev/contrail-authority";
 export * from "@atmo-dev/contrail-record-host";
 
+// Record-sync ingestion (consumer side of recordHost.sync)
+export {
+  runRecordHostSync,
+  buildRecordSyncSchema,
+  applyRecordSyncSchema,
+} from "./sync";
+export type {
+  RecordHostSyncSource,
+  RecordHostSyncOptions,
+} from "./sync";
+
 // Indexing pipeline (jetstream, persistent, backfill, refresh, ingest helpers)
 export * from "./core/jetstream";
 export * from "./core/persistent";

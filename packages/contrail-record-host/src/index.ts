@@ -25,3 +25,6 @@ export type { BlobGcOptions, BlobGcResult } from "./blob-gc";
 export { collectBlobCids } from "./blob-refs";
 
 export { registerRecordHostRoutes } from "./routes";
+
+export { registerRecordHostSyncRoutes } from "./sync";
+export type { RecordHostSyncOptions, SyncEvent } from "./sync";
