@@ -12,6 +12,8 @@ import { buildVerifier, createServiceAuthMiddleware } from "../spaces/auth";
 import { HostedAdapter } from "../spaces/adapter";
 import type { StorageAdapter } from "../spaces/types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
+import { createManifestVerifier } from "@atmo-dev/contrail-base";
+import type { ManifestVerifier } from "@atmo-dev/contrail-base";
 import type { CommunityIntegration } from "../community-integration";
 import { registerRealtimeRoutes } from "../realtime/router";
 import type { RealtimeRoutesOptions } from "../realtime/router";
@@ -29,6 +31,12 @@ import type { MiddlewareHandler } from "hono";
 export interface SpacesContext {
   adapter: StorageAdapter;
   verifier: ServiceJwtVerifier;
+  /** Verifies inbound `X-Membership-Manifest` headers. Built automatically
+   *  when an authority is configured locally with signing keys; deployments
+   *  that aggregate manifests from multiple authorities should construct one
+   *  via {@link createManifestVerifier} with a custom key resolver and pass
+   *  it through `options.spacesCtx`. */
+  manifestVerifier?: ManifestVerifier;
 }
 
 export interface CreateAppOptions {
@@ -131,6 +139,14 @@ export function createApp(
         ? {
             adapter: options.spaces?.adapter ?? new HostedAdapter(spacesDb, config),
             verifier: buildVerifier(config.spaces.authority),
+            manifestVerifier: config.spaces.authority.signing
+              ? createManifestVerifier({
+                  resolveKey: async (iss) =>
+                    iss === config.spaces!.authority!.serviceDid
+                      ? config.spaces!.authority!.signing!.publicKey
+                      : null,
+                })
+              : undefined,
           }
         : null;
 

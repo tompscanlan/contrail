@@ -138,6 +138,43 @@ export async function verifyMembershipManifest(
   return { ok: true, claims };
 }
 
+/** Stateful manifest verifier with a TTL'd in-memory cache keyed by JWT.
+ *  Returns the same shape as {@link verifyMembershipManifest}; cache hits skip
+ *  the crypto round-trip but still respect `exp`. Reuse one verifier per
+ *  process — never construct per-request. */
+export interface ManifestVerifier {
+  verify(jwt: string): Promise<ManifestVerifyOk | ManifestVerifyErr>;
+}
+
+/** Build a manifest verifier with caching. The cache is unbounded for now —
+ *  manifests are short-lived (default 2h) and clients typically refresh them,
+ *  so cardinality is bounded by active-user count. */
+export function createManifestVerifier(opts: VerifyManifestOptions): ManifestVerifier {
+  const cache = new Map<string, ManifestVerifyOk | ManifestVerifyErr>();
+  const now = opts.now ?? Date.now;
+  return {
+    async verify(jwt) {
+      const cached = cache.get(jwt);
+      if (cached) {
+        if (cached.ok) {
+          if (cached.claims.exp * 1000 > now()) return cached;
+          cache.delete(jwt);
+        } else {
+          // Negative cache only for permanent failures (signature, alg);
+          // expired / not-yet-valid will roll over with the clock.
+          if (cached.reason === "bad-signature" || cached.reason === "bad-alg" || cached.reason === "malformed") {
+            return cached;
+          }
+          cache.delete(jwt);
+        }
+      }
+      const result = await verifyMembershipManifest(jwt, opts);
+      cache.set(jwt, result);
+      return result;
+    },
+  };
+}
+
 /** Peek at claims without verifying — useful for routing decisions. */
 export function decodeUnverifiedManifest(jwt: string): MembershipManifestClaims | null {
   const parts = jwt.split(".");

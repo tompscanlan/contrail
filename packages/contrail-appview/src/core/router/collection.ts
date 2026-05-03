@@ -599,17 +599,45 @@ export function registerCollectionRoutes(
 
         // Union path: when the caller is authenticated, fold in records from
         // spaces they're a member of. Anonymous callers just get public results.
+        //
+        // The caller authenticates with service-auth (`Authorization: Bearer
+        // <jwt>`). Their member-of space list comes from one of:
+        //   1. `X-Membership-Manifest` header — signed list issued by some
+        //      authority asserting `sub` is in these spaces. The manifest's
+        //      `sub` MUST match the JWT's issuer (DID) — the manifest is not
+        //      a bearer token. Preferred for multi-authority deployments.
+        //   2. Local listSpaces — appview asks its own authority adapter
+        //      `listSpaces({ memberDid: jwt.issuer })`. Works when the appview
+        //      operator IS the authority.
         let spaceUris: string[] | undefined;
         const hasAuthHeader = !!c.req.header("Authorization");
+        const manifestHeader = c.req.header("X-Membership-Manifest");
         if (spacesCtx) {
           const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
           const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
           if (auth) {
-            const { spaces } = await spacesCtx.adapter.listSpaces({
-              memberDid: auth.issuer,
-              limit: 200,
-            });
-            spaceUris = spaces.map((s) => s.uri);
+            if (manifestHeader && spacesCtx.manifestVerifier) {
+              const verified = await spacesCtx.manifestVerifier.verify(manifestHeader);
+              if (!verified.ok) {
+                return c.json(
+                  { error: "AuthRequired", reason: verified.reason, message: "invalid membership manifest" },
+                  401
+                );
+              }
+              if (verified.claims.sub !== auth.issuer) {
+                return c.json(
+                  { error: "Forbidden", reason: "manifest-sub-mismatch", message: "manifest sub does not match caller" },
+                  403
+                );
+              }
+              spaceUris = verified.claims.spaces;
+            } else {
+              const { spaces } = await spacesCtx.adapter.listSpaces({
+                memberDid: auth.issuer,
+                limit: 200,
+              });
+              spaceUris = spaces.map((s) => s.uri);
+            }
           } else if (hasAuthHeader) {
             // Had an auth header but it was invalid — reject rather than
             // silently downgrading to public results.
