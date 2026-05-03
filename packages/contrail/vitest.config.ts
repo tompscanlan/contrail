@@ -3,6 +3,7 @@ import path from "node:path";
 
 const baseSrc = path.resolve(__dirname, "../contrail-base/src");
 const authoritySrc = path.resolve(__dirname, "../contrail-authority/src");
+const recordHostSrc = path.resolve(__dirname, "../contrail-record-host/src");
 
 export default defineConfig({
   test: {
@@ -18,6 +19,7 @@ export default defineConfig({
       "@atmo-dev/contrail-base/postgres": path.join(baseSrc, "adapters/postgres.ts"),
       "@atmo-dev/contrail-base": path.join(baseSrc, "index.ts"),
       "@atmo-dev/contrail-authority": path.join(authoritySrc, "index.ts"),
+      "@atmo-dev/contrail-record-host": path.join(recordHostSrc, "index.ts"),
     },
   },
 });

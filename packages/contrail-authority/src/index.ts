@@ -1,8 +1,7 @@
 /** @atmo-dev/contrail-authority — default space-authority implementation.
  *
  *  Owns the authority-side adapter (member list, invites, app policy, space
- *  lifecycle) and DDL. Route registration currently lives in
- *  @atmo-dev/contrail and will move here in a subsequent extraction pass. */
+ *  lifecycle, credential issuance), DDL, and route registration. */
 
 export {
   HostedAuthorityAdapter,
@@ -17,3 +16,8 @@ export {
   buildAuthoritySchema,
   applyAuthoritySchema,
 } from "./schema";
+
+export { registerAuthorityRoutes } from "./routes";
+
+export { registerInviteRoutes } from "./invite-routes";
+export type { InviteRoutesOptions } from "./invite-routes";

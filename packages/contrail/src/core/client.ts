@@ -1,1 +1,1 @@
-export * from "@atmo-dev/contrail-base";
+export * from "@atmo-dev/contrail-appview";
