@@ -365,6 +365,16 @@ export class ProvisionOrchestrator {
         `provision attempt ${attemptId} has no encrypted rotation key`
       );
     }
+    // Guard: only rows that successfully completed createAccount but didn't
+    // get past the PLC update + activate steps belong here. Re-running
+    // steps 4-5 against an already-activated DID corrupts state, and
+    // running them against a row that hasn't even reached account_created
+    // bypasses the genesis/createAccount work the row needs.
+    if (row.status !== "account_created") {
+      throw new Error(
+        `provision attempt ${attemptId} is at status="${row.status}"; resumeFromAccountCreated requires status="account_created"`
+      );
+    }
 
     const rotationPrivateJwk = JSON.parse(
       await cipher.decryptString(row.encryptedRotationKey)

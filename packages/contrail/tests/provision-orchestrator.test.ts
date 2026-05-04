@@ -274,4 +274,144 @@ describe("ProvisionOrchestrator", () => {
     expect(row?.status).toBe("activated");
     expect(row?.activatedAt).toBeTruthy();
   });
+
+  describe("resumeFromAccountCreated status guard", () => {
+    /** Seed a row, walk it to the requested status, and return its
+     *  attemptId. Rotation key is real so the resume path could decode it
+     *  if the guard let it through. */
+    async function seedAtStatus(
+      attemptId: string,
+      status:
+        | "keys_generated"
+        | "genesis_submitted"
+        | "did_doc_updated"
+        | "activated"
+    ): Promise<void> {
+      const rotationKey = await generateKeyPair();
+      const encryptedRotation = await cipher.encrypt(
+        JSON.stringify(rotationKey.privateJwk)
+      );
+      const encryptedSigning = await cipher.encrypt(JSON.stringify({}));
+      await adapter.createProvisionAttempt({
+        attemptId,
+        did: `did:plc:${attemptId}`,
+        pdsEndpoint: "https://pds.test",
+        handle: `${attemptId}.pds.test`,
+        email: `${attemptId}@x.test`,
+        encryptedSigningKey: encryptedSigning,
+        encryptedRotationKey: encryptedRotation,
+        callerRotationDidKey: rotationKey.publicDidKey,
+      });
+      // Status-walk via updateProvisionStatus so timestamps are stamped
+      // realistically.
+      const path: Record<typeof status, string[]> = {
+        keys_generated: [],
+        genesis_submitted: ["genesis_submitted"],
+        did_doc_updated: [
+          "genesis_submitted",
+          "account_created",
+          "did_doc_updated",
+        ],
+        activated: [
+          "genesis_submitted",
+          "account_created",
+          "did_doc_updated",
+          "activated",
+        ],
+      };
+      for (const next of path[status]) {
+        await adapter.updateProvisionStatus(attemptId, next as any);
+      }
+    }
+
+    /** A PDS stub whose every method throws — if the guard doesn't trip
+     *  first, the test will fail loudly with an unrelated error. */
+    function poisonedPds() {
+      return {
+        async createAccount() {
+          throw new Error("createAccount should not run during guarded resume");
+        },
+        async getRecommendedDidCredentials() {
+          throw new Error(
+            "getRecommendedDidCredentials should not run during guarded resume"
+          );
+        },
+        async activateAccount() {
+          throw new Error(
+            "activateAccount should not run during guarded resume"
+          );
+        },
+        async createAppPassword() {
+          throw new Error(
+            "createAppPassword should not run during guarded resume"
+          );
+        },
+      };
+    }
+
+    it("refuses when row is at status=activated", async () => {
+      await seedAtStatus("guard-activated", "activated");
+      const orch = new ProvisionOrchestrator({
+        adapter,
+        cipher,
+        plc: mockPlc(),
+        pds: poisonedPds(),
+        pdsDid: "did:web:pds.test",
+      });
+      await expect(
+        orch.resumeFromAccountCreated("guard-activated", "AT")
+      ).rejects.toThrow(/account_created/);
+      const row = await adapter.getProvisionAttempt("guard-activated");
+      // Row untouched.
+      expect(row?.status).toBe("activated");
+    });
+
+    it("refuses when row is at status=keys_generated", async () => {
+      await seedAtStatus("guard-keys", "keys_generated");
+      const orch = new ProvisionOrchestrator({
+        adapter,
+        cipher,
+        plc: mockPlc(),
+        pds: poisonedPds(),
+        pdsDid: "did:web:pds.test",
+      });
+      await expect(
+        orch.resumeFromAccountCreated("guard-keys", "AT")
+      ).rejects.toThrow(/account_created/);
+      const row = await adapter.getProvisionAttempt("guard-keys");
+      expect(row?.status).toBe("keys_generated");
+    });
+
+    it("refuses when row is at status=genesis_submitted", async () => {
+      await seedAtStatus("guard-genesis", "genesis_submitted");
+      const orch = new ProvisionOrchestrator({
+        adapter,
+        cipher,
+        plc: mockPlc(),
+        pds: poisonedPds(),
+        pdsDid: "did:web:pds.test",
+      });
+      await expect(
+        orch.resumeFromAccountCreated("guard-genesis", "AT")
+      ).rejects.toThrow(/account_created/);
+      const row = await adapter.getProvisionAttempt("guard-genesis");
+      expect(row?.status).toBe("genesis_submitted");
+    });
+
+    it("refuses when row is at status=did_doc_updated", async () => {
+      await seedAtStatus("guard-didupd", "did_doc_updated");
+      const orch = new ProvisionOrchestrator({
+        adapter,
+        cipher,
+        plc: mockPlc(),
+        pds: poisonedPds(),
+        pdsDid: "did:web:pds.test",
+      });
+      await expect(
+        orch.resumeFromAccountCreated("guard-didupd", "AT")
+      ).rejects.toThrow(/account_created/);
+      const row = await adapter.getProvisionAttempt("guard-didupd");
+      expect(row?.status).toBe("did_doc_updated");
+    });
+  });
 });
