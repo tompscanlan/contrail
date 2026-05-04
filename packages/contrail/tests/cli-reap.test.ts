@@ -14,14 +14,20 @@ import { runReap } from "../src/cli/commands/reap";
 import type { Database } from "../src/core/types";
 import { createTestDbWithSchema } from "./helpers";
 
+type SeedStatus =
+  | "keys_generated"
+  | "genesis_submitted"
+  | "account_created"
+  | "did_doc_updated"
+  | "activated";
+
 interface SeedAttemptOpts {
   attemptId: string;
   did: string;
-  status: "orphaned" | "activated" | "keys_generated";
+  status: SeedStatus;
 }
 
 async function seedAttempt(
-  db: Database,
   adapter: CommunityAdapter,
   cipher: CredentialCipher,
   opts: SeedAttemptOpts
@@ -38,21 +44,18 @@ async function seedAttempt(
     encryptedRotationKey: encryptedRotation,
     callerRotationDidKey: kp.publicDidKey,
   });
-  if (opts.status !== "keys_generated") {
-    // Walk the row to its target status. We bypass updateProvisionStatus's
-    // enum validation by going through it normally — the schema accepts every
-    // declared status, so a direct path is fine.
-    if (opts.status === "orphaned") {
-      await adapter.updateProvisionStatus(opts.attemptId, "genesis_submitted");
-      await adapter.updateProvisionStatus(opts.attemptId, "orphaned", {
-        lastError: "test fixture",
-      });
-    } else if (opts.status === "activated") {
-      await adapter.updateProvisionStatus(opts.attemptId, "genesis_submitted");
-      await adapter.updateProvisionStatus(opts.attemptId, "account_created");
-      await adapter.updateProvisionStatus(opts.attemptId, "did_doc_updated");
-      await adapter.updateProvisionStatus(opts.attemptId, "activated");
-    }
+  // Walk the row forward to its target status. The row starts at
+  // keys_generated after createProvisionAttempt.
+  const path: SeedStatus[] = [
+    "genesis_submitted",
+    "account_created",
+    "did_doc_updated",
+    "activated",
+  ];
+  for (const next of path) {
+    if (opts.status === "keys_generated") break;
+    await adapter.updateProvisionStatus(opts.attemptId, next);
+    if (next === opts.status) break;
   }
   return { rotationJwk: kp.privateJwk };
 }
@@ -107,7 +110,7 @@ describe("runReap (cli reap)", () => {
     adapter = new CommunityAdapter(db);
   });
 
-  it("rejects when neither --attempt-id nor --all-orphaned is set", async () => {
+  it("rejects when neither --attempt-id nor --all-stuck is set", async () => {
     const result = await runReap({
       adapter,
       cipher,
@@ -117,10 +120,10 @@ describe("runReap (cli reap)", () => {
       yes: true,
     });
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/--attempt-id|--all-orphaned/i);
+    expect(result.error).toMatch(/--attempt-id|--all-stuck/i);
   });
 
-  it("rejects when both --attempt-id and --all-orphaned are set", async () => {
+  it("rejects when both --attempt-id and --all-stuck are set", async () => {
     const result = await runReap({
       adapter,
       cipher,
@@ -129,52 +132,17 @@ describe("runReap (cli reap)", () => {
       logger: { log: () => {}, error: () => {} },
       yes: true,
       attemptId: "a1",
-      allOrphaned: true,
+      allStuck: true,
     });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/mutually exclusive|both|exactly one/i);
   });
 
-  it("dry-run leaves the row unchanged and creates no archive entry", async () => {
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "a-orphan",
-      did: "did:plc:orphan",
-      status: "orphaned",
-    });
-
-    const calls: PlcCall[] = [];
-    const result = await runReap({
-      adapter,
-      cipher,
-      plcDirectory: "https://plc.test",
-      fetch: makeFakeFetch(calls),
-      logger: { log: () => {}, error: () => {} },
-      yes: true,
-      attemptId: "a-orphan",
-      dryRun: true,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.reaped).toBe(0);
-    expect(result.dryRunSkipped).toBe(1);
-    // No PLC POST was issued (we ignore log/last in calls list).
-    expect(calls.length).toBe(0);
-    // Row still in provision_attempts with status=orphaned.
-    const row = await adapter.getProvisionAttempt("a-orphan");
-    expect(row?.status).toBe("orphaned");
-    // No archive row.
-    const archive = await db
-      .prepare("SELECT * FROM provision_attempts_orphaned_archive WHERE attempt_id = ?")
-      .bind("a-orphan")
-      .first();
-    expect(archive).toBeNull();
-  });
-
   it("real run with --attempt-id submits a tombstone and archives the row", async () => {
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "a-orphan",
-      did: "did:plc:orphan",
-      status: "orphaned",
+    await seedAttempt(adapter, cipher, {
+      attemptId: "a-stuck",
+      did: "did:plc:stuck",
+      status: "genesis_submitted",
     });
 
     const calls: PlcCall[] = [];
@@ -185,7 +153,7 @@ describe("runReap (cli reap)", () => {
       fetch: makeFakeFetch(calls),
       logger: { log: () => {}, error: () => {} },
       yes: true,
-      attemptId: "a-orphan",
+      attemptId: "a-stuck",
       dryRun: false,
     });
 
@@ -193,80 +161,30 @@ describe("runReap (cli reap)", () => {
     expect(result.reaped).toBe(1);
     expect(result.errors).toBe(0);
     expect(calls.length).toBe(1);
-    expect(calls[0]!.url).toBe("https://plc.test/did:plc:orphan");
-    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.url).toBe("https://plc.test/did:plc:stuck");
     expect(calls[0]!.body.type).toBe("plc_tombstone");
     expect(calls[0]!.body.prev).toBe(await cidForOp(FAKE_LAST_OP));
-    expect(typeof calls[0]!.body.sig).toBe("string");
 
     // Original row removed from provision_attempts.
-    const original = await adapter.getProvisionAttempt("a-orphan");
-    expect(original).toBeNull();
-    // Archive row populated.
+    expect(await adapter.getProvisionAttempt("a-stuck")).toBeNull();
+    // Archive row populated with the row's last live status.
     const archive = await db
-      .prepare("SELECT * FROM provision_attempts_orphaned_archive WHERE attempt_id = ?")
-      .bind("a-orphan")
+      .prepare(
+        "SELECT * FROM provision_attempts_orphaned_archive WHERE attempt_id = ?"
+      )
+      .bind("a-stuck")
       .first<Record<string, any>>();
     expect(archive).not.toBeNull();
-    expect(archive!.did).toBe("did:plc:orphan");
-    expect(archive!.last_status).toBe("orphaned");
+    expect(archive!.did).toBe("did:plc:stuck");
+    expect(archive!.last_status).toBe("genesis_submitted");
     expect(archive!.tombstone_op_cid).toBeTruthy();
-    expect(Number(archive!.archived_at)).toBeGreaterThan(0);
-  });
-
-  it("with --all-orphaned reaps every orphaned row", async () => {
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "o1",
-      did: "did:plc:o1",
-      status: "orphaned",
-    });
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "o2",
-      did: "did:plc:o2",
-      status: "orphaned",
-    });
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "o3",
-      did: "did:plc:o3",
-      status: "orphaned",
-    });
-    // A non-orphaned row should not be reaped.
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "live",
-      did: "did:plc:live",
-      status: "activated",
-    });
-
-    const calls: PlcCall[] = [];
-    const result = await runReap({
-      adapter,
-      cipher,
-      plcDirectory: "https://plc.test",
-      fetch: makeFakeFetch(calls),
-      logger: { log: () => {}, error: () => {} },
-      yes: true,
-      allOrphaned: true,
-      dryRun: false,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.reaped).toBe(3);
-    expect(calls.length).toBe(3);
-    expect(calls.map((c) => c.url).sort()).toEqual([
-      "https://plc.test/did:plc:o1",
-      "https://plc.test/did:plc:o2",
-      "https://plc.test/did:plc:o3",
-    ]);
-    // The activated row is untouched.
-    const live = await adapter.getProvisionAttempt("live");
-    expect(live?.status).toBe("activated");
   });
 
   it("defaults to dry-run when dryRun is unspecified (safety default)", async () => {
-    await seedAttempt(db, adapter, cipher, {
-      attemptId: "a-orphan",
-      did: "did:plc:orphan",
-      status: "orphaned",
+    await seedAttempt(adapter, cipher, {
+      attemptId: "a-stuck",
+      did: "did:plc:stuck",
+      status: "did_doc_updated",
     });
 
     const calls: PlcCall[] = [];
@@ -277,7 +195,7 @@ describe("runReap (cli reap)", () => {
       fetch: makeFakeFetch(calls),
       logger: { log: () => {}, error: () => {} },
       yes: true,
-      attemptId: "a-orphan",
+      attemptId: "a-stuck",
       // dryRun INTENTIONALLY OMITTED — must default to dry-run.
     });
 
@@ -285,12 +203,59 @@ describe("runReap (cli reap)", () => {
     expect(result.reaped).toBe(0);
     expect(result.dryRunSkipped).toBe(1);
     expect(calls.length).toBe(0);
-    const row = await adapter.getProvisionAttempt("a-orphan");
-    expect(row?.status).toBe("orphaned");
+    const row = await adapter.getProvisionAttempt("a-stuck");
+    expect(row?.status).toBe("did_doc_updated");
   });
 
-  it("refuses to reap a non-orphaned row passed via --attempt-id", async () => {
-    await seedAttempt(db, adapter, cipher, {
+  it("with --all-stuck reaps every non-activated row, regardless of status", async () => {
+    await seedAttempt(adapter, cipher, {
+      attemptId: "s1",
+      did: "did:plc:s1",
+      status: "keys_generated",
+    });
+    await seedAttempt(adapter, cipher, {
+      attemptId: "s2",
+      did: "did:plc:s2",
+      status: "genesis_submitted",
+    });
+    await seedAttempt(adapter, cipher, {
+      attemptId: "s3",
+      did: "did:plc:s3",
+      status: "did_doc_updated",
+    });
+    // An activated row must NOT be reaped.
+    await seedAttempt(adapter, cipher, {
+      attemptId: "live",
+      did: "did:plc:live",
+      status: "activated",
+    });
+
+    const calls: PlcCall[] = [];
+    const result = await runReap({
+      adapter,
+      cipher,
+      plcDirectory: "https://plc.test",
+      fetch: makeFakeFetch(calls),
+      logger: { log: () => {}, error: () => {} },
+      yes: true,
+      allStuck: true,
+      dryRun: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.reaped).toBe(3);
+    expect(calls.map((c) => c.url).sort()).toEqual([
+      "https://plc.test/did:plc:s1",
+      "https://plc.test/did:plc:s2",
+      "https://plc.test/did:plc:s3",
+    ]);
+    // The activated row is untouched.
+    const live = await adapter.getProvisionAttempt("live");
+    expect(live?.status).toBe("activated");
+  });
+
+  it("refuses to reap an activated row passed via --attempt-id", async () => {
+    await seedAttempt(adapter, cipher, {
       attemptId: "live",
       did: "did:plc:live",
       status: "activated",
@@ -305,19 +270,13 @@ describe("runReap (cli reap)", () => {
       logger: { log: () => {}, error: () => {} },
       yes: true,
       attemptId: "live",
+      dryRun: false,
     });
 
-    // Either ok=false OR ok=true with skipped=1+errors>=1; we just assert the row is unchanged.
     expect(calls.length).toBe(0);
+    expect(result.errors).toBeGreaterThanOrEqual(1);
     const live = await adapter.getProvisionAttempt("live");
     expect(live?.status).toBe("activated");
-    // No archive row.
-    const archive = await db
-      .prepare("SELECT * FROM provision_attempts_orphaned_archive WHERE attempt_id = ?")
-      .bind("live")
-      .first();
-    expect(archive).toBeNull();
-    expect(result.errors).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -501,17 +501,24 @@ export class CommunityAdapter {
       .run();
   }
 
-  /** Convenience wrapper: list every row currently in `orphaned` status. */
-  async listOrphanedAttempts(): Promise<ProvisionAttemptRow[]> {
-    return this.listProvisionAttemptsByStatus("orphaned", 0);
+  /** List every provision attempt that did NOT reach `activated`. These are
+   *  the rows reap can act on: any non-terminal status means the flow stopped
+   *  partway, leaving (typically) a dangling DID in PLC that needs
+   *  tombstoning. */
+  async listStuckAttempts(): Promise<ProvisionAttemptRow[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT * FROM provision_attempts WHERE status != 'activated' ORDER BY updated_at ASC`
+      )
+      .all<Record<string, any>>();
+    return rows.results.map(rowToProvisionAttempt);
   }
 
-  /** Move an orphaned provision_attempts row into the archive table. The row
-   *  must already be in `orphaned` status — callers (the `contrail reap`
-   *  command) check that. The copy is best-effort atomic per row: insert into
-   *  the archive first, then delete from the live table. If the delete fails,
-   *  the archive row records the attempt and the live row is still present
-   *  for retry. */
+  /** Move a stuck provision_attempts row into the archive table after reap
+   *  has tombstoned its DID in PLC. The copy is best-effort atomic per row:
+   *  insert into the archive first, then delete from the live table. If the
+   *  delete fails, the archive row records the attempt and the live row is
+   *  still present for retry. */
   async archiveOrphanedAttempt(
     attemptId: string,
     opts: { tombstoneOpCid?: string | null; notes?: string | null } = {}

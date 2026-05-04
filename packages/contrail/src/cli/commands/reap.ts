@@ -17,7 +17,7 @@ interface ReapOpts {
   remote?: boolean;
   binding: string;
   attemptId?: string;
-  allOrphaned?: boolean;
+  allStuck?: boolean;
   dryRun?: boolean;
   yes?: boolean;
 }
@@ -39,7 +39,7 @@ export interface RunReapOptions {
    *  --yes; tests always pass true since they don't have a TTY. */
   yes: boolean;
   attemptId?: string;
-  allOrphaned?: boolean;
+  allStuck?: boolean;
   dryRun?: boolean;
 }
 
@@ -51,7 +51,7 @@ export interface RunReapResult {
   reaped: number;
   /** Number of rows skipped because of --dry-run. */
   dryRunSkipped: number;
-  /** Number of rows that errored out during reap (non-orphaned, PLC error, etc.). */
+  /** Number of rows that errored out during reap (activated row, PLC error, etc.). */
   errors: number;
 }
 
@@ -71,36 +71,36 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
   const dryRun = opts.dryRun ?? true;
 
   const hasAttemptId = !!opts.attemptId;
-  const hasAllOrphaned = !!opts.allOrphaned;
-  if (!hasAttemptId && !hasAllOrphaned) {
+  const hasAllStuck = !!opts.allStuck;
+  if (!hasAttemptId && !hasAllStuck) {
     return {
       ...result,
       ok: false,
-      error: "Specify exactly one of --attempt-id <uuid> or --all-orphaned.",
+      error: "Specify exactly one of --attempt-id <uuid> or --all-stuck.",
     };
   }
-  if (hasAttemptId && hasAllOrphaned) {
+  if (hasAttemptId && hasAllStuck) {
     return {
       ...result,
       ok: false,
       error:
-        "--attempt-id and --all-orphaned are mutually exclusive; pass exactly one.",
+        "--attempt-id and --all-stuck are mutually exclusive; pass exactly one.",
     };
   }
 
   const rows = hasAttemptId
     ? await loadSingle(opts.adapter, opts.attemptId!)
-    : await opts.adapter.listOrphanedAttempts();
+    : await opts.adapter.listStuckAttempts();
 
   if (rows.length === 0) {
-    opts.logger.log("No orphaned provision_attempts to reap.");
+    opts.logger.log("No stuck provision_attempts to reap.");
     return result;
   }
 
   for (const row of rows) {
-    if (row.status !== "orphaned") {
+    if (row.status === "activated") {
       opts.logger.error(
-        `Refusing to reap ${row.attemptId}: status is "${row.status}", expected "orphaned".`
+        `Refusing to reap ${row.attemptId}: status is "activated"; reap will not tombstone live communities.`
       );
       result.errors += 1;
       continue;
@@ -203,7 +203,7 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
 async function loadSingle(
   adapter: CommunityAdapter,
   attemptId: string
-): Promise<Awaited<ReturnType<CommunityAdapter["listOrphanedAttempts"]>>> {
+): Promise<Awaited<ReturnType<CommunityAdapter["listStuckAttempts"]>>> {
   const row = await adapter.getProvisionAttempt(attemptId);
   return row ? [row] : [];
 }
@@ -212,7 +212,7 @@ export function registerReap(cli: CAC): void {
   cli
     .command(
       "reap",
-      "Tombstone orphaned provision_attempts rows in PLC and archive them"
+      "Tombstone stuck provision_attempts rows in PLC and archive them"
     )
     .option("--config <path>", "Path to Contrail config file")
     .option("--root <path>", "Project root for auto-detection (default: CWD)")
@@ -221,7 +221,10 @@ export function registerReap(cli: CAC): void {
       default: "DB",
     })
     .option("--attempt-id <uuid>", "Reap a single attempt by ID")
-    .option("--all-orphaned", "Reap every row with status=orphaned")
+    .option(
+      "--all-stuck",
+      "Reap every provision_attempts row that did not reach status=activated"
+    )
     .option(
       "--dry-run",
       "Print what would be tombstoned without submitting to PLC (DEFAULT)"
@@ -232,13 +235,13 @@ export function registerReap(cli: CAC): void {
     )
     .option("--yes", "Auto-confirm prompts")
     .action(async (options: ReapOpts) => {
-      if (!options.attemptId && !options.allOrphaned) {
-        console.error("Specify --attempt-id <uuid> or --all-orphaned.");
+      if (!options.attemptId && !options.allStuck) {
+        console.error("Specify --attempt-id <uuid> or --all-stuck.");
         process.exit(1);
       }
-      if (options.attemptId && options.allOrphaned) {
+      if (options.attemptId && options.allStuck) {
         console.error(
-          "--attempt-id and --all-orphaned are mutually exclusive; pass exactly one."
+          "--attempt-id and --all-stuck are mutually exclusive; pass exactly one."
         );
         process.exit(1);
       }
@@ -289,7 +292,7 @@ export function registerReap(cli: CAC): void {
           logger: console,
           yes: !!options.yes,
           attemptId: options.attemptId,
-          allOrphaned: options.allOrphaned,
+          allStuck: options.allStuck,
           dryRun: options.dryRun,
         });
 
