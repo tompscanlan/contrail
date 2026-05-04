@@ -11,6 +11,7 @@ import {
   createPdsSession,
   decodeJwtExp,
   tryRefreshSession,
+  normalizePdsEndpoint,
 } from "./pds";
 import {
   generateKeyPair,
@@ -268,16 +269,42 @@ export function registerCommunityRoutes(
       );
     }
 
-    const allowed = cfg.allowedPdsEndpoints;
-    if (allowed && allowed.length > 0 && !allowed.includes(body.pdsEndpoint)) {
+    let normalizedPdsEndpoint: string;
+    try {
+      normalizedPdsEndpoint = normalizePdsEndpoint(body.pdsEndpoint);
+    } catch {
       return c.json(
         {
           error: "InvalidRequest",
-          message: `pdsEndpoint not in allowlist`,
+          message: "pdsEndpoint must be a parseable URL",
         },
         400
       );
     }
+
+    const allowed = cfg.allowedPdsEndpoints;
+    if (allowed && allowed.length > 0) {
+      const allowedNormalized = allowed.map((e) => {
+        try {
+          return normalizePdsEndpoint(e);
+        } catch {
+          // An unparseable allowlist entry can never match; treat as the
+          // original string so an obvious config typo at least produces a
+          // reject for the caller rather than a server crash.
+          return e;
+        }
+      });
+      if (!allowedNormalized.includes(normalizedPdsEndpoint)) {
+        return c.json(
+          {
+            error: "InvalidRequest",
+            message: `pdsEndpoint not in allowlist`,
+          },
+          400
+        );
+      }
+    }
+    body.pdsEndpoint = normalizedPdsEndpoint;
 
     // Resolve the target PDS's DID dynamically. The service-auth JWT's `aud`
     // must match what the PDS publishes for itself via describeServer; the

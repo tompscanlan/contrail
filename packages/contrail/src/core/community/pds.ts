@@ -8,6 +8,16 @@ import {
   type DidDocumentResolver,
 } from "@atcute/identity-resolver";
 
+/** Canonicalize a PDS endpoint URL so allowlist comparisons aren't bypassed by
+ *  trailing slash, default port, scheme case, or IDN encoding differences.
+ *  Returns the URL's `origin` — scheme + host + (non-default) port — which
+ *  collapses every variant of a single PDS to one string. Throws if the input
+ *  is not a parseable URL; callers in request paths should catch and respond
+ *  with a 400. */
+export function normalizePdsEndpoint(url: string): string {
+  return new URL(url).origin;
+}
+
 export interface ResolvedIdentity {
   did: string;
   handle: string | null;

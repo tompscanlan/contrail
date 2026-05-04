@@ -6,6 +6,7 @@ import { initSchema } from "../src/core/db/schema";
 import { createApp } from "../src/core/router";
 import { resolveConfig } from "../src/core/types";
 import type { ContrailConfig } from "../src/core/types";
+import { normalizePdsEndpoint } from "../src/core/community/pds";
 
 const ALICE = "did:plc:alice";
 const MASTER_KEY = new Uint8Array(32).fill(99);
@@ -168,5 +169,100 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
+  });
+
+  it("matches when caller adds a trailing slash to a slash-less allowlist entry", async () => {
+    const app = await makeApp([ALLOWED_PDS]);
+    const res = await call(app, {
+      handle: "newcomm.allowed.pds.test",
+      email: "x@x.test",
+      password: "secret",
+      inviteCode: "code-x",
+      pdsEndpoint: `${ALLOWED_PDS}/`,
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("matches when caller uppercases the scheme on an allowlisted endpoint", async () => {
+    const app = await makeApp([ALLOWED_PDS]);
+    const res = await call(app, {
+      handle: "newcomm.allowed.pds.test",
+      email: "x@x.test",
+      password: "secret",
+      inviteCode: "code-x",
+      pdsEndpoint: ALLOWED_PDS.replace(/^https/, "HTTPS"),
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("matches when caller appends the default :443 port", async () => {
+    const app = await makeApp([ALLOWED_PDS]);
+    const res = await call(app, {
+      handle: "newcomm.allowed.pds.test",
+      email: "x@x.test",
+      password: "secret",
+      inviteCode: "code-x",
+      pdsEndpoint: ALLOWED_PDS.replace(/^https:\/\/([^/]+)/, "https://$1:443"),
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects pdsEndpoint that is not a parseable URL", async () => {
+    const app = await makeApp([ALLOWED_PDS]);
+    const res = await call(app, {
+      handle: "newcomm.allowed.pds.test",
+      email: "x@x.test",
+      password: "secret",
+      pdsEndpoint: "not a url",
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(400);
+    const j = (await res.json()) as { error: string; message: string };
+    expect(j.error).toBe("InvalidRequest");
+    expect(j.message).toMatch(/parseable|url/i);
+  });
+});
+
+describe("normalizePdsEndpoint", () => {
+  it("collapses scheme case", () => {
+    expect(normalizePdsEndpoint("HTTPS://pds.example.com")).toBe(
+      "https://pds.example.com"
+    );
+  });
+  it("collapses host case", () => {
+    expect(normalizePdsEndpoint("https://PDS.Example.com")).toBe(
+      "https://pds.example.com"
+    );
+  });
+  it("strips trailing slash", () => {
+    expect(normalizePdsEndpoint("https://pds.example.com/")).toBe(
+      "https://pds.example.com"
+    );
+  });
+  it("strips default :443 for https", () => {
+    expect(normalizePdsEndpoint("https://pds.example.com:443")).toBe(
+      "https://pds.example.com"
+    );
+  });
+  it("strips default :80 for http", () => {
+    expect(normalizePdsEndpoint("http://pds.example.com:80")).toBe(
+      "http://pds.example.com"
+    );
+  });
+  it("preserves a non-default port", () => {
+    expect(normalizePdsEndpoint("https://pds.example.com:8443")).toBe(
+      "https://pds.example.com:8443"
+    );
+  });
+  it("converts an IDN hostname to its punycode form", () => {
+    expect(normalizePdsEndpoint("https://exämple.com")).toBe(
+      "https://xn--exmple-cua.com"
+    );
+  });
+  it("throws on an unparseable URL", () => {
+    expect(() => normalizePdsEndpoint("not a url")).toThrow();
   });
 });
