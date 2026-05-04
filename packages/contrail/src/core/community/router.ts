@@ -909,6 +909,11 @@ export function registerCommunityRoutes(
         }),
       }
     );
+    if (res.status === 401) {
+      // Stale or revoked session: drop the cache so the next request goes
+      // cold through ensureSession.
+      await community.clearSession(body.communityDid);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return c.json(
@@ -986,6 +991,9 @@ export function registerCommunityRoutes(
         }),
       }
     );
+    if (res.status === 401) {
+      await community.clearSession(body.communityDid);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return c.json(
