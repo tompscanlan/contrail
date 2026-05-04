@@ -29,7 +29,6 @@ export const PROVISION_STATUSES = [
   "account_created",
   "did_doc_updated",
   "activated",
-  "orphaned",
 ] as const;
 export type ProvisionStatus = (typeof PROVISION_STATUSES)[number];
 

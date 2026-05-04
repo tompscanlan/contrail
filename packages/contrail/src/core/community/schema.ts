@@ -53,8 +53,7 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
         'genesis_submitted',
         'account_created',
         'did_doc_updated',
-        'activated',
-        'orphaned'
+        'activated'
       )),
       pds_endpoint TEXT NOT NULL,
       handle TEXT NOT NULL,

@@ -101,10 +101,10 @@ describe("provision_attempts adapter", () => {
     // Earlier stamp must be preserved on subsequent updates.
     expect(row?.genesisSubmittedAt).toBeTruthy();
 
-    await adapter.updateProvisionStatus("a1", "orphaned", { lastError: "createSession 401" });
+    await adapter.updateProvisionStatus("a1", "did_doc_updated", { lastError: "transient PLC error" });
     row = await adapter.getProvisionAttempt("a1");
-    expect(row?.status).toBe("orphaned");
-    expect(row?.lastError).toBe("createSession 401");
+    expect(row?.status).toBe("did_doc_updated");
+    expect(row?.lastError).toBe("transient PLC error");
     // Earlier stamps still preserved.
     expect(row?.genesisSubmittedAt).toBeTruthy();
     expect(row?.accountCreatedAt).toBeTruthy();
