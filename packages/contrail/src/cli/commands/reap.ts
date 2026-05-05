@@ -180,7 +180,7 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
     }
 
     try {
-      await opts.adapter.archiveOrphanedAttempt(row.attemptId, {
+      await opts.adapter.archiveStuckAttempt(row.attemptId, {
         tombstoneOpCid: opCid,
       });
     } catch (err) {

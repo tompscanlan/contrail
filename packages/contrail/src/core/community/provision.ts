@@ -1,6 +1,6 @@
 /** Provision orchestrator: runs the 5-RPC flow (genesis → createAccount →
  *  recommendedCreds → PLC update → activate), persisting status after each
- *  step so a stuck attempt can be resumed via `resumeFromAccountCreated`.
+ *  step so a stuck attempt is recognizable to the reap CLI.
  *
  *  Steps and persisted statuses:
  *    Step 0  generate keys + persist row                       → keys_generated
@@ -19,7 +19,6 @@ import {
   buildUpdateOp,
   signUpdateOp,
   cidForOp,
-  jwkToDidKey,
 } from "./plc";
 import type { RecommendedDidCredentials } from "./pds";
 import { decodeJwtExp } from "./pds";
@@ -29,9 +28,6 @@ import type { CredentialCipher } from "./credentials";
 
 export interface PlcClient {
   submit(did: string, op: any): Promise<unknown>;
-  /** Returns the CID of the most recent op in the DID's PLC log. Used by the
-   *  resume path to set `prev` on a fresh update op. */
-  getLastOpCid(did: string): Promise<string>;
 }
 
 export interface PdsClient {
@@ -180,7 +176,6 @@ export class ProvisionOrchestrator {
       inviteCode: input.inviteCode ?? null,
       encryptedSigningKey: encryptedSigning,
       encryptedRotationKey: encryptedRotation,
-      callerRotationDidKey: input.rotationKey,
     });
 
     // Step 1: PLC genesis
@@ -228,16 +223,50 @@ export class ProvisionOrchestrator {
       throw err;
     }
 
-    await this.runUpdateAndActivate({
-      attemptId: input.attemptId,
-      did,
-      pdsEndpoint: input.pdsEndpoint,
-      accessJwt: session.accessJwt,
-      rotationPrivateJwk: contrailRotation.privateJwk,
-      rotationPublicDidKey: contrailRotation.publicDidKey,
-      callerRotationPublicDidKey: input.rotationKey,
-      prevCid: await cidForOp(signedGenesis),
-    });
+    // Step 3 + 4: getRecommendedDidCredentials + PLC update op
+    try {
+      const recommended = await pds.getRecommendedDidCredentials({
+        pdsUrl: input.pdsEndpoint,
+        accessJwt: session.accessJwt,
+      });
+      const baseRotationKeys = [input.rotationKey, contrailRotation.publicDidKey];
+      const updatedRotationKeys = [
+        ...baseRotationKeys,
+        ...recommended.rotationKeys.filter((k) => !baseRotationKeys.includes(k)),
+      ];
+      const unsignedUpdate = buildUpdateOp({
+        prev: await cidForOp(signedGenesis),
+        rotationKeys: updatedRotationKeys,
+        verificationMethodAtproto: recommended.verificationMethods.atproto,
+        alsoKnownAs: recommended.alsoKnownAs,
+        services: recommended.services,
+      });
+      const signedUpdate = await signUpdateOp(
+        unsignedUpdate,
+        contrailRotation.privateJwk
+      );
+      await plc.submit(did, signedUpdate);
+      await adapter.updateProvisionStatus(input.attemptId, "did_doc_updated");
+    } catch (err: any) {
+      await adapter.updateProvisionStatus(input.attemptId, "account_created", {
+        lastError: `did-doc-update: ${err.message}`,
+      });
+      throw err;
+    }
+
+    // Step 5: activateAccount
+    try {
+      await pds.activateAccount({
+        pdsUrl: input.pdsEndpoint,
+        accessJwt: session.accessJwt,
+      });
+      await adapter.updateProvisionStatus(input.attemptId, "activated");
+    } catch (err: any) {
+      await adapter.updateProvisionStatus(input.attemptId, "did_doc_updated", {
+        lastError: `activateAccount: ${err.message}`,
+      });
+      throw err;
+    }
 
     // Seed the session cache with the JWTs createAccount returned, so the
     // first publish doesn't waste a createSession round-trip. ensureSession
@@ -346,122 +375,6 @@ export class ProvisionOrchestrator {
     };
   }
 
-  /** Resume a stuck attempt that already advanced past createAccount.
-   *  Picks up at step 3, fetches the genesis CID from the PLC directory, and
-   *  drives steps 4-5 to completion. Caller obtains the accessJwt via a fresh
-   *  createSession against the deactivated account (typically an operator-run
-   *  recovery script). */
-  async resumeFromAccountCreated(
-    attemptId: string,
-    accessJwt: string
-  ): Promise<void> {
-    const { adapter, cipher, plc } = this.deps;
-    const row = await adapter.getProvisionAttempt(attemptId);
-    if (!row) {
-      throw new Error(`provision attempt not found: ${attemptId}`);
-    }
-    if (!row.encryptedRotationKey) {
-      throw new Error(
-        `provision attempt ${attemptId} has no encrypted rotation key`
-      );
-    }
-    // Guard: only rows that successfully completed createAccount but didn't
-    // get past the PLC update + activate steps belong here. Re-running
-    // steps 4-5 against an already-activated DID corrupts state, and
-    // running them against a row that hasn't even reached account_created
-    // bypasses the genesis/createAccount work the row needs.
-    if (row.status !== "account_created") {
-      throw new Error(
-        `provision attempt ${attemptId} is at status="${row.status}"; resumeFromAccountCreated requires status="account_created"`
-      );
-    }
-
-    const rotationPrivateJwk = JSON.parse(
-      await cipher.decryptString(row.encryptedRotationKey)
-    ) as JsonWebKey;
-    // We re-derive the rotation public did:key from the JWK to merge with the
-    // PDS's recommended rotation keys (the local key must remain in the chain).
-    const rotationPublicDidKey = jwkPubToDidKey(rotationPrivateJwk);
-
-    const prevCid = await plc.getLastOpCid(row.did);
-
-    await this.runUpdateAndActivate({
-      attemptId,
-      did: row.did,
-      pdsEndpoint: row.pdsEndpoint,
-      accessJwt,
-      rotationPrivateJwk,
-      rotationPublicDidKey,
-      callerRotationPublicDidKey: row.callerRotationDidKey,
-      prevCid,
-    });
-  }
-
-  /** Steps 3-5: fetch recommended creds, sign + submit the PLC update op,
-   *  activate the account. Shared by `provision()` and
-   *  `resumeFromAccountCreated()`. The two outer try blocks here mirror the
-   *  original linear flow so the persisted statuses on failure stay
-   *  identical. */
-  private async runUpdateAndActivate(args: {
-    attemptId: string;
-    did: string;
-    pdsEndpoint: string;
-    accessJwt: string;
-    rotationPrivateJwk: JsonWebKey;
-    rotationPublicDidKey: string;
-    /** Caller-supplied rotation public did:key. Kept at index 0 of the update
-     *  op's rotationKeys so the caller retains highest-priority rotation
-     *  authority on the DID. */
-    callerRotationPublicDidKey: string;
-    prevCid: string;
-  }): Promise<void> {
-    const { adapter, plc, pds } = this.deps;
-
-    // Step 3 + 4: getRecommendedDidCredentials + PLC update op
-    try {
-      const recommended = await pds.getRecommendedDidCredentials({
-        pdsUrl: args.pdsEndpoint,
-        accessJwt: args.accessJwt,
-      });
-      const baseRotationKeys = [args.callerRotationPublicDidKey, args.rotationPublicDidKey];
-      const updatedRotationKeys = [
-        ...baseRotationKeys,
-        ...recommended.rotationKeys.filter((k) => !baseRotationKeys.includes(k)),
-      ];
-      const unsignedUpdate = buildUpdateOp({
-        prev: args.prevCid,
-        rotationKeys: updatedRotationKeys,
-        verificationMethodAtproto: recommended.verificationMethods.atproto,
-        alsoKnownAs: recommended.alsoKnownAs,
-        services: recommended.services,
-      });
-      const signedUpdate = await signUpdateOp(
-        unsignedUpdate,
-        args.rotationPrivateJwk
-      );
-      await plc.submit(args.did, signedUpdate);
-      await adapter.updateProvisionStatus(args.attemptId, "did_doc_updated");
-    } catch (err: any) {
-      await adapter.updateProvisionStatus(args.attemptId, "account_created", {
-        lastError: `did-doc-update: ${err.message}`,
-      });
-      throw err;
-    }
-
-    // Step 5: activateAccount
-    try {
-      await pds.activateAccount({
-        pdsUrl: args.pdsEndpoint,
-        accessJwt: args.accessJwt,
-      });
-      await adapter.updateProvisionStatus(args.attemptId, "activated");
-    } catch (err: any) {
-      await adapter.updateProvisionStatus(args.attemptId, "did_doc_updated", {
-        lastError: `activateAccount: ${err.message}`,
-      });
-      throw err;
-    }
-  }
 }
 
 /** Cheap structural check for did:key:z multibase identifiers. The orchestrator
@@ -471,21 +384,3 @@ function isDidKeyZ(s: string): boolean {
   return typeof s === "string" && s.startsWith("did:key:z") && s.length > 12;
 }
 
-/** Re-derive the did:key form of a P-256 public key from the private JWK.
- *  A P-256 private JWK includes the public x/y coordinates, so we can hand
- *  those to `jwkToDidKey` to recover the public did:key without round-tripping
- *  through Web Crypto. */
-function jwkPubToDidKey(privateJwk: JsonWebKey): string {
-  if (privateJwk.kty !== "EC" || privateJwk.crv !== "P-256") {
-    throw new Error("expected EC P-256 JWK for rotation key");
-  }
-  if (!privateJwk.x || !privateJwk.y) {
-    throw new Error("rotation private JWK is missing x/y coordinates");
-  }
-  return jwkToDidKey({
-    kty: "EC",
-    crv: "P-256",
-    x: privateJwk.x,
-    y: privateJwk.y,
-  });
-}

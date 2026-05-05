@@ -439,8 +439,8 @@ export class CommunityAdapter {
         `INSERT INTO provision_attempts (
           attempt_id, did, status, pds_endpoint, handle, email, invite_code,
           encrypted_signing_key, encrypted_rotation_key,
-          caller_rotation_did_key, created_at, updated_at
-        ) VALUES (?, ?, 'keys_generated', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at
+        ) VALUES (?, ?, 'keys_generated', ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         input.attemptId,
@@ -451,7 +451,6 @@ export class CommunityAdapter {
         input.inviteCode ?? null,
         input.encryptedSigningKey,
         input.encryptedRotationKey,
-        input.callerRotationDidKey,
         now,
         now
       )
@@ -519,7 +518,7 @@ export class CommunityAdapter {
    *  insert into the archive first, then delete from the live table. If the
    *  delete fails, the archive row records the attempt and the live row is
    *  still present for retry. */
-  async archiveOrphanedAttempt(
+  async archiveStuckAttempt(
     attemptId: string,
     opts: { tombstoneOpCid?: string | null; notes?: string | null } = {}
   ): Promise<void> {
@@ -533,7 +532,7 @@ export class CommunityAdapter {
     const now = Date.now();
     await this.db
       .prepare(
-        `INSERT INTO provision_attempts_orphaned_archive (
+        `INSERT INTO provision_attempts_archive (
           attempt_id, did, pds_endpoint, handle, email, invite_code,
           last_status, last_error,
           archived_at, tombstone_op_cid, notes
@@ -557,20 +556,6 @@ export class CommunityAdapter {
       .prepare(`DELETE FROM provision_attempts WHERE attempt_id = ?`)
       .bind(attemptId)
       .run();
-  }
-
-  async listProvisionAttemptsByStatus(
-    status: ProvisionStatus,
-    olderThanMs: number = 0
-  ): Promise<ProvisionAttemptRow[]> {
-    const cutoff = Date.now() - olderThanMs;
-    const rows = await this.db
-      .prepare(
-        `SELECT * FROM provision_attempts WHERE status = ? AND updated_at <= ? ORDER BY updated_at ASC`
-      )
-      .bind(status, cutoff)
-      .all<Record<string, any>>();
-    return rows.results.map(rowToProvisionAttempt);
   }
 
   // ---- Community sessions cache -----------------------------------------
@@ -633,7 +618,6 @@ function rowToProvisionAttempt(r: Record<string, any>): ProvisionAttemptRow {
     encryptedSigningKey: r.encrypted_signing_key ?? null,
     encryptedRotationKey: r.encrypted_rotation_key ?? null,
     encryptedPassword: r.encrypted_password ?? null,
-    callerRotationDidKey: r.caller_rotation_did_key ?? null,
     genesisSubmittedAt: r.genesis_submitted_at == null ? null : Number(r.genesis_submitted_at),
     accountCreatedAt: r.account_created_at == null ? null : Number(r.account_created_at),
     didDocUpdatedAt: r.did_doc_updated_at == null ? null : Number(r.did_doc_updated_at),

@@ -34,7 +34,6 @@ export type {
   PdsCreateAccountBody,
   PdsCreateAccountResult,
   RecommendedDidCredentials,
-  PdsCreateSessionResult,
 } from "./pds";
 export {
   generateKeyPair,

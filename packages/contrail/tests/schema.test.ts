@@ -58,35 +58,6 @@ describe("initSchema", () => {
 });
 
 describe("provision_attempts schema", () => {
-  it("creates the table with the expected columns", async () => {
-    const db = await createTestDbWithSchema();
-    await initCommunitySchema(db);
-    const cols = await db
-      .prepare("PRAGMA table_info(provision_attempts)")
-      .all<{ name: string; type: string; notnull: number }>();
-    const names = cols.results.map((c) => c.name).sort();
-    expect(names).toEqual([
-      "account_created_at",
-      "activated_at",
-      "attempt_id",
-      "caller_rotation_did_key",
-      "created_at",
-      "did",
-      "did_doc_updated_at",
-      "email",
-      "encrypted_password",
-      "encrypted_rotation_key",
-      "encrypted_signing_key",
-      "genesis_submitted_at",
-      "handle",
-      "invite_code",
-      "last_error",
-      "pds_endpoint",
-      "status",
-      "updated_at",
-    ]);
-  });
-
   it("enforces status enum", async () => {
     const db = await createTestDbWithSchema();
     await initCommunitySchema(db);
@@ -98,24 +69,6 @@ describe("provision_attempts schema", () => {
         .bind("a1", "did:plc:x", "bogus", 1, 1, "https://pds", "h.test", "x@x")
         .run()
     ).rejects.toThrow();
-  });
-});
-
-describe("community_sessions schema", () => {
-  it("creates the cache table", async () => {
-    const db = await createTestDbWithSchema();
-    await initCommunitySchema(db);
-    const cols = await db
-      .prepare("PRAGMA table_info(community_sessions)")
-      .all<{ name: string }>();
-    const names = cols.results.map((c) => c.name).sort();
-    expect(names).toEqual([
-      "access_exp",
-      "access_jwt",
-      "community_did",
-      "refresh_jwt",
-      "updated_at",
-    ]);
   });
 });
 

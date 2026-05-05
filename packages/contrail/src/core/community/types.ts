@@ -43,9 +43,6 @@ export interface ProvisionAttemptRow {
   encryptedSigningKey: string | null;
   encryptedRotationKey: string | null;
   encryptedPassword: string | null;
-  /** Caller-supplied rotation public did:key, persisted so PLC update ops
-   *  (initial + resume) can keep it as rotationKeys[0]. */
-  callerRotationDidKey: string;
   genesisSubmittedAt: number | null;
   accountCreatedAt: number | null;
   didDocUpdatedAt: number | null;
@@ -64,9 +61,6 @@ export interface CreateProvisionAttemptInput {
   inviteCode?: string | null;
   encryptedSigningKey: string;
   encryptedRotationKey: string;
-  /** Caller-supplied rotation public did:key. The orchestrator persists this
-   *  so PLC update ops (initial + resume) can keep it as rotationKeys[0]. */
-  callerRotationDidKey: string;
 }
 
 export interface CommunityConfig {

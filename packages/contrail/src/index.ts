@@ -155,7 +155,6 @@ export type {
   PdsCreateAccountBody,
   PdsCreateAccountResult,
   RecommendedDidCredentials,
-  PdsCreateSessionResult,
   PdsClient,
   PlcClient,
   ProvisionInput,

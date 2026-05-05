@@ -90,7 +90,6 @@ describe("reap tombstone CID matches live PLC log/last (M6)", () => {
 
   const plcClient: PlcClient = {
     submit: (did, op) => submitGenesisOp(PLC_URL, did, op as any),
-    getLastOpCid: (did) => getLastOpCid(PLC_URL, did),
   };
 
   async function mintInvite(): Promise<string> {

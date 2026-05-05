@@ -62,7 +62,6 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
       encrypted_signing_key TEXT,
       encrypted_rotation_key TEXT,
       encrypted_password TEXT,
-      caller_rotation_did_key TEXT NOT NULL,
       genesis_submitted_at ${dialect.bigintType},
       account_created_at ${dialect.bigintType},
       did_doc_updated_at ${dialect.bigintType},
@@ -74,7 +73,7 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
     `CREATE INDEX IF NOT EXISTS idx_provision_attempts_status ON provision_attempts(status, updated_at DESC)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_provision_attempts_did ON provision_attempts(did)`,
 
-    `CREATE TABLE IF NOT EXISTS provision_attempts_orphaned_archive (
+    `CREATE TABLE IF NOT EXISTS provision_attempts_archive (
       attempt_id TEXT PRIMARY KEY NOT NULL,
       did TEXT NOT NULL,
       pds_endpoint TEXT NOT NULL,
@@ -87,7 +86,7 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
       tombstone_op_cid TEXT,
       notes TEXT
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_provision_attempts_orphaned_archive_archived_at ON provision_attempts_orphaned_archive(archived_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_provision_attempts_archive_archived_at ON provision_attempts_archive(archived_at DESC)`,
 
     `CREATE TABLE IF NOT EXISTS community_sessions (
       community_did TEXT PRIMARY KEY NOT NULL,

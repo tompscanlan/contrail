@@ -16,4 +16,4 @@ what you need to configure / know:
 
 - new `community` config block: `masterKey` (32-byte AES-GCM envelope key for the encrypted credential columns), optional `allowedPdsEndpoints` (URL-origin matching, collapses scheme case / default ports / trailing slash / IDN), optional `plcDirectory` override.
 
-- new tables `provision_attempts` and `community_credentials`. credentials are stored AES-GCM-encrypted under the master key; lose the master key, lose the ability to mint sessions for previously-provisioned communities.
+- new tables `provision_attempts` and `community_credentials`. credentials are stored AES-GCM-encrypted under that key; lose the key, lose the ability to mint sessions for previously-provisioned communities.

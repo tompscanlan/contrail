@@ -19,7 +19,6 @@ import {
   signGenesisOp,
   computeDidPlc,
   submitGenesisOp,
-  getLastOpCid,
 } from "./plc";
 import {
   pdsCreateAccount,
@@ -1230,7 +1229,6 @@ function buildOrchestrator(
 
   const plc: PlcClient = {
     submit: (did, op) => submitGenesisOp(plcDirectory, did, op as any, fetchOpts),
-    getLastOpCid: (did) => getLastOpCid(plcDirectory, did, fetchOpts),
   };
 
   const pds: PdsClient = {

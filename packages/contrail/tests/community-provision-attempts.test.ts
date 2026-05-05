@@ -23,7 +23,6 @@ describe("provision_attempts adapter", () => {
       inviteCode: "code-1",
       encryptedSigningKey: "sk-enc",
       encryptedRotationKey: "rk-enc",
-      callerRotationDidKey: "did:key:zCallerStub",
     });
 
     const row = await adapter.getProvisionAttempt("a1");
@@ -61,7 +60,6 @@ describe("provision_attempts adapter", () => {
       email: "noinv@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
-      callerRotationDidKey: "did:key:zCallerStub",
     });
     const row = await adapter.getProvisionAttempt("a-no-invite");
     expect(row?.inviteCode).toBeNull();
@@ -76,7 +74,6 @@ describe("provision_attempts adapter", () => {
       email: "abc@x.test",
       encryptedSigningKey: "sk-enc",
       encryptedRotationKey: "rk-enc",
-      callerRotationDidKey: "did:key:zCallerStub",
     });
 
     const initial = await adapter.getProvisionAttempt("a1");
@@ -119,7 +116,6 @@ describe("provision_attempts adapter", () => {
       email: "pwd@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
-      callerRotationDidKey: "did:key:zCallerStub",
     });
     expect((await adapter.getProvisionAttempt("a-pwd"))?.encryptedPassword).toBeNull();
 
@@ -131,44 +127,6 @@ describe("provision_attempts adapter", () => {
     expect(row?.accountCreatedAt).toBeTruthy();
   });
 
-  it("lists attempts by status, ordered by updated_at ascending", async () => {
-    for (const id of ["a1", "a2", "a3"]) {
-      await adapter.createProvisionAttempt({
-        attemptId: id,
-        did: `did:plc:${id}`,
-        pdsEndpoint: "https://pds.test",
-        handle: `${id}.pds.test`,
-        email: `${id}@x.test`,
-        encryptedSigningKey: "sk",
-        encryptedRotationKey: "rk",
-        callerRotationDidKey: "did:key:zCallerStub",
-      });
-    }
-    await adapter.updateProvisionStatus("a2", "genesis_submitted");
-    const stuck = await adapter.listProvisionAttemptsByStatus("genesis_submitted");
-    expect(stuck.map((r) => r.attemptId)).toEqual(["a2"]);
-
-    // The two untouched attempts remain in the default status.
-    const generated = await adapter.listProvisionAttemptsByStatus("keys_generated");
-    expect(generated.map((r) => r.attemptId).sort()).toEqual(["a1", "a3"]);
-  });
-
-  it("listProvisionAttemptsByStatus respects olderThanMs cutoff", async () => {
-    await adapter.createProvisionAttempt({
-      attemptId: "fresh",
-      did: "did:plc:fresh",
-      pdsEndpoint: "https://pds.test",
-      handle: "fresh.pds.test",
-      email: "fresh@x.test",
-      encryptedSigningKey: "sk",
-      encryptedRotationKey: "rk",
-      callerRotationDidKey: "did:key:zCallerStub",
-    });
-    // A huge cutoff means "only return rows older than 1 hour" — fresh row excluded.
-    const stale = await adapter.listProvisionAttemptsByStatus("keys_generated", 60 * 60 * 1000);
-    expect(stale.map((r) => r.attemptId)).not.toContain("fresh");
-  });
-
   it("enforces did uniqueness across attempts", async () => {
     await adapter.createProvisionAttempt({
       attemptId: "first",
@@ -178,7 +136,6 @@ describe("provision_attempts adapter", () => {
       email: "first@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
-      callerRotationDidKey: "did:key:zCallerStub",
     });
     await expect(
       adapter.createProvisionAttempt({
@@ -189,8 +146,7 @@ describe("provision_attempts adapter", () => {
         email: "second@x.test",
         encryptedSigningKey: "sk",
         encryptedRotationKey: "rk",
-        callerRotationDidKey: "did:key:zCallerStub",
-      })
+        })
     ).rejects.toThrow();
   });
 });

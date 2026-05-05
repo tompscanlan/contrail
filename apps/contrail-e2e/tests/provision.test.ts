@@ -31,7 +31,6 @@ import {
   generateKeyPair,
   createPdsSession,
   submitGenesisOp,
-  getLastOpCid,
   type PdsClient,
   type PlcClient,
 } from "@atmo-dev/contrail";
@@ -103,7 +102,6 @@ describe("ProvisionOrchestrator devnet e2e", () => {
 
   const plcClient: PlcClient = {
     submit: (did, op) => submitGenesisOp(PLC_URL, did, op as any),
-    getLastOpCid: (did) => getLastOpCid(PLC_URL, did),
   };
 
   /** Mint a single-use invite via the PDS admin API. Shared helper for both

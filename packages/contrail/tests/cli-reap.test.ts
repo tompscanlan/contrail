@@ -42,7 +42,6 @@ async function seedAttempt(
     email: `${opts.attemptId}@x.test`,
     encryptedSigningKey: await cipher.encrypt("{}"),
     encryptedRotationKey: encryptedRotation,
-    callerRotationDidKey: kp.publicDidKey,
   });
   // Walk the row forward to its target status. The row starts at
   // keys_generated after createProvisionAttempt.
@@ -170,7 +169,7 @@ describe("runReap (cli reap)", () => {
     // Archive row populated with the row's last live status.
     const archive = await db
       .prepare(
-        "SELECT * FROM provision_attempts_orphaned_archive WHERE attempt_id = ?"
+        "SELECT * FROM provision_attempts_archive WHERE attempt_id = ?"
       )
       .bind("a-stuck")
       .first<Record<string, any>>();

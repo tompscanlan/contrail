@@ -30,20 +30,6 @@ export interface PdsSession {
   did: string;
 }
 
-/** Full result of `com.atproto.server.createSession`, including the optional
- *  `active`/`status` fields a PDS returns when the account is deactivated.
- *  An operator-run recovery probe uses these to distinguish a resumable row
- *  (`active: false, status: "deactivated"` → pick up at step 3) from an
- *  orphan (createSession 401 → no PDS account exists). */
-export interface PdsCreateSessionResult {
-  did: string;
-  handle: string;
-  accessJwt: string;
-  refreshJwt: string;
-  active?: boolean;
-  status?: string;
-}
-
 function defaultResolver(): DidDocumentResolver {
   return new CompositeDidDocumentResolver({
     methods: {
@@ -331,14 +317,14 @@ export interface PdsCreateAppPasswordResult {
 }
 
 /** Calls `com.atproto.server.createAppPassword` on the target PDS using the
- *  session's accessJwt. Returns the freshly minted app password. The PDS
- *  refuses to mint privileged passwords by default — we keep `privileged: false`
- *  so the credential can be revoked without affecting the root account. */
+ *  session's accessJwt. Returns the freshly minted app password. We always
+ *  send `privileged: false` so the credential can be revoked without
+ *  affecting the root account. */
 export async function pdsCreateAppPassword(
   pdsEndpoint: string,
   accessJwt: string,
   name: string,
-  opts: { fetch?: typeof fetch; privileged?: boolean } = {}
+  opts: { fetch?: typeof fetch } = {}
 ): Promise<PdsCreateAppPasswordResult> {
   const f = opts.fetch ?? fetch;
   const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.createAppPassword`;
@@ -348,7 +334,7 @@ export async function pdsCreateAppPassword(
       "content-type": "application/json",
       authorization: `Bearer ${accessJwt}`,
     },
-    body: JSON.stringify({ name, privileged: opts.privileged ?? false }),
+    body: JSON.stringify({ name, privileged: false }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

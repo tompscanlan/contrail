@@ -8,16 +8,13 @@ import { createTestDbWithSchema } from "./helpers";
 
 /** Mock PLC client that records every submitted op so tests can inspect the
  *  genesis op (in particular, its rotationKeys array). */
-function mockPlc(opts: { lastOpCid?: string } = {}) {
+function mockPlc() {
   const ops: Array<{ did: string; op: any }> = [];
   return {
     ops,
     async submit(did: string, op: any) {
       ops.push({ did, op });
       return { ok: true };
-    },
-    async getLastOpCid(_did: string) {
-      return opts.lastOpCid ?? "bafyreistubgenesiscid";
     },
   };
 }
@@ -278,9 +275,6 @@ describe("ProvisionOrchestrator — caller-supplied rotation key", () => {
       ops: [] as Array<{ did: string; op: any }>,
       async submit(_did: string, _op: any) {
         throw new Error("retry must not re-submit PLC ops");
-      },
-      async getLastOpCid() {
-        return "bafyretryguard";
       },
     };
     const retryAppPasswordCalls: any[] = [];
