@@ -350,16 +350,14 @@ export async function backfillPending(
 
     const dids = [...byDid.keys()];
 
-    // Resolve PDS endpoints in background (populates in-memory cache)
-    const resolvePromise = (async () => {
-      for (let i = 0; i < dids.length; i += 200) {
-        await Promise.allSettled(
-          dids.slice(i, i + 200).map((did) =>
-            getPDS(did as Did, db).catch(() => {})
-          )
-        );
-      }
-    })();
+    // Resolve PDS endpoints (populates in-memory cache)
+    for (let i = 0; i < dids.length; i += 200) {
+      await Promise.allSettled(
+        dids.slice(i, i + 200).map((did) =>
+          getPDS(did as Did, db).catch(() => {})
+        )
+      );
+    }
 
     let roundBackfilled = 0;
     let usersComplete = 0;
@@ -471,7 +469,6 @@ export async function backfillPending(
       }
     }
 
-    await resolvePromise;
     totalBackfilled += roundBackfilled;
 
     // If nothing was backfilled this round, we're stuck
