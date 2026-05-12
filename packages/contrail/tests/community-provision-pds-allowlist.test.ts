@@ -85,6 +85,7 @@ function buildConfig(allowedPdsEndpoints: string[] | undefined): ContrailConfig 
       plcDirectory: PLC_DIRECTORY,
       fetch: mockFetch,
       allowedPdsEndpoints,
+      allowProvisioning: true,
     },
   };
 }

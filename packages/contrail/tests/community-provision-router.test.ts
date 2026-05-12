@@ -111,6 +111,7 @@ const CONFIG: ContrailConfig = {
     masterKey: MASTER_KEY,
     plcDirectory: PLC_DIRECTORY,
     fetch: mockFetch,
+    allowProvisioning: true,
   },
 };
 
@@ -148,6 +149,38 @@ async function call(
     })
   );
 }
+
+describe("POST /xrpc/{ns}.community.provision (allowProvisioning gate)", () => {
+  // Builds an app whose community config OMITS allowProvisioning. The route
+  // is expected to refuse with 403 ProvisioningDisabled — operators must
+  // explicitly opt in. The default-deny posture protects deployments where
+  // the auth middleware allows broader audiences than "operator only" from
+  // having any authenticated caller mint communities + burn invite codes.
+  async function makeAppWithoutAllowProvisioning(): Promise<Hono> {
+    const db = createSqliteDatabase(":memory:");
+    const configWithoutFlag: ContrailConfig = {
+      ...CONFIG,
+      community: { ...CONFIG.community!, allowProvisioning: undefined } as any,
+    };
+    const resolved = resolveConfig(configWithoutFlag);
+    await initSchema(db, resolved);
+    return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+  }
+
+  it("returns 403 ProvisioningDisabled when allowProvisioning is not set", async () => {
+    const app = await makeAppWithoutAllowProvisioning();
+    const res = await call(app, "POST", "/xrpc/test.comm.community.provision", ALICE, {
+      handle: "newcomm.pds.test",
+      email: "newcomm@x.test",
+      password: "secret",
+      pdsEndpoint: PDS_ENDPOINT,
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("ProvisioningDisabled");
+  });
+});
 
 describe("POST /xrpc/{ns}.community.provision", () => {
   let app: Hono;
@@ -225,6 +258,34 @@ describe("POST /xrpc/{ns}.community.provision", () => {
         c.url.endsWith("/xrpc/com.atproto.server.activateAccount")
       )
     ).toBe(true);
+  });
+
+  it("is idempotent on retry with the same attemptId after a fully-completed first call", async () => {
+    // The route already returns attemptId on every error response so a
+    // caller can retry. This guards the case where the first call
+    // succeeded end-to-end (orchestrator + graduation + reserved spaces)
+    // but the caller didn't receive the 200 (e.g. lost connection): a
+    // resent request with the same attemptId must still 200, return the
+    // same DID, and not double-create rows.
+    const attemptId = "retry-idem-1";
+    const body = {
+      attemptId,
+      handle: "retryidem.pds.test",
+      email: "retryidem@x.test",
+      password: "secret",
+      pdsEndpoint: PDS_ENDPOINT,
+      rotationKey: "did:key:zStubCallerRotationKey",
+    };
+
+    const first = await call(app, "POST", "/xrpc/test.comm.community.provision", ALICE, body);
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { communityDid: string };
+
+    const second = await call(app, "POST", "/xrpc/test.comm.community.provision", ALICE, body);
+    expect(second.status).toBe(200);
+    const secondJson = (await second.json()) as { communityDid: string };
+
+    expect(secondJson.communityDid).toBe(firstJson.communityDid);
   });
 
   it("uses the describeServer-returned DID as the service-auth JWT audience (not cfg.serviceDid)", async () => {

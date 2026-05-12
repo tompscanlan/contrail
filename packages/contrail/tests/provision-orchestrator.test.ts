@@ -193,4 +193,67 @@ describe("ProvisionOrchestrator", () => {
     expect(row?.lastError).toMatch(/bad invite/);
   });
 
+  it("re-invoking with the same attemptId on a fully-completed row returns success without redoing PLC/PDS work", async () => {
+    // Scenario: the orchestrator finished cleanly (status=activated +
+    // encryptedPassword set), but a *downstream* step (router's
+    // createFromProvisioned or bootstrapReservedSpaces) failed and the
+    // caller retries with the same attemptId. The orchestrator must not
+    // throw "already exists" — it should report success so the route can
+    // resume the graduation steps.
+    const plc = mockPlc();
+    const pds: any = mockPds();
+    const orch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc,
+      pds,
+      pdsDid: "did:web:pds.test",
+    });
+
+    const first = await orch.provision({
+      attemptId: "a1",
+      pdsEndpoint: "https://pds.test",
+      handle: "h.test",
+      email: "h@x.test",
+      password: "p",
+      inviteCode: "code",
+      rotationKey: STUB_ROTATION_KEY,
+    });
+    expect(first.status).toBe("activated");
+    const opsAfterFirst = plc.ops.length;
+
+    // Wire a fresh PDS mock whose every method throws — if the retry path
+    // calls any of them, the test fails loudly. createSession is allowed
+    // because the C3 retry path is wired for the not-yet-completed case;
+    // a fully-completed row should NOT hit it either.
+    const explodingPds: any = {
+      createAccount: () => { throw new Error("createAccount should not be called on a completed retry"); },
+      getRecommendedDidCredentials: () => { throw new Error("getRecommendedDidCredentials should not be called"); },
+      activateAccount: () => { throw new Error("activateAccount should not be called"); },
+      createAppPassword: () => { throw new Error("createAppPassword should not be called on a completed retry"); },
+      createSession: () => { throw new Error("createSession should not be called on a completed retry"); },
+    };
+    const retryOrch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc: { submit: () => { throw new Error("plc.submit should not be called on a completed retry"); } },
+      pds: explodingPds,
+      pdsDid: "did:web:pds.test",
+    });
+
+    const second = await retryOrch.provision({
+      attemptId: "a1",
+      pdsEndpoint: "https://pds.test",
+      handle: "h.test",
+      email: "h@x.test",
+      password: "p",
+      inviteCode: "code",
+      rotationKey: STUB_ROTATION_KEY,
+    });
+    expect(second.status).toBe("activated");
+    expect(second.did).toBe(first.did);
+    expect(second.attemptId).toBe("a1");
+    expect(plc.ops.length).toBe(opsAfterFirst);
+  });
+
 });

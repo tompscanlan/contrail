@@ -123,13 +123,30 @@ export class ProvisionOrchestrator {
 
     // Idempotent retry: a caller that gets a 5xx with an attemptId can
     // re-invoke provision with the SAME attemptId and the orchestrator picks
-    // up where it left off. The shape we recover from here is an attempt that
-    // completed activation but whose post-activation createAppPassword failed
-    // (no encryptedPassword stored). Other partial states
-    // (e.g. status='account_created') are out of scope — they should use
-    // resumeFromAccountCreated.
+    // up where it left off. Two recoverable shapes:
+    //   1. status='activated', encryptedPassword present — the orchestrator
+    //      itself completed successfully but a downstream graduation step
+    //      (e.g. the route's createFromProvisioned, bootstrap of reserved
+    //      spaces) failed. We return success without re-running any PLC/PDS
+    //      work so the caller — or the route — can resume the post-orch path.
+    //   2. status='activated', no encryptedPassword — activation succeeded
+    //      but the post-activation createAppPassword failed. retryAppPasswordOnly
+    //      re-runs only that final step.
+    // Other partial states are not resumable through this entry point.
     const existing = await adapter.getProvisionAttempt(input.attemptId);
     if (existing) {
+      if (existing.status === "activated" && existing.encryptedPassword) {
+        return {
+          attemptId: input.attemptId,
+          did: existing.did,
+          status: "activated",
+          rootCredentials: {
+            handle: input.handle,
+            password: input.password,
+            recoveryHint: "store this — Contrail does not retain it",
+          },
+        };
+      }
       if (existing.status === "activated" && !existing.encryptedPassword) {
         return this.retryAppPasswordOnly(input, existing);
       }

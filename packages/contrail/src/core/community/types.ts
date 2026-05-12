@@ -83,6 +83,15 @@ export interface CommunityConfig {
    *  callers can't mint PLC entries pointing at attacker-controlled PDSes
    *  signed by Contrail's rotation key. */
   allowedPdsEndpoints?: string[];
+  /** Top-level switch for the `community.provision` route. Default-deny: a
+   *  call with the route present but this flag unset (or false) returns 403
+   *  ProvisioningDisabled BEFORE any PLC/PDS work runs. Set to `true` only
+   *  when the operator has confirmed the upstream auth middleware restricts
+   *  this route to authorized callers — every successful call burns a real
+   *  invite code on the target PDS and adds a permanent entry to PLC.
+   *  `mint` and `adopt` are not gated by this flag; they don't burn external
+   *  resources. */
+  allowProvisioning?: boolean;
 }
 
 /** Public view of a community row. Encrypted credentials are not included here

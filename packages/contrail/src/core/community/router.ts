@@ -229,6 +229,20 @@ export function registerCommunityRoutes(
   });
 
   app.post(`/xrpc/${NS}.provision`, auth, async (c) => {
+    // Default-deny gate. Every successful call burns an invite code on the
+    // target PDS and adds a permanent entry to PLC, so the route refuses
+    // unless the operator has explicitly opted in via cfg.allowProvisioning.
+    // Checked BEFORE auth-issued state inspection so an unauthorized op
+    // doesn't even surface that the route exists in a usable form.
+    if (!cfg.allowProvisioning) {
+      return c.json(
+        {
+          error: "ProvisioningDisabled",
+          message: "community.provision is disabled on this Contrail deployment",
+        },
+        403
+      );
+    }
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
       | {
@@ -348,35 +362,42 @@ export function registerCommunityRoutes(
       );
     }
 
-    // Hand the already-encrypted password from the provision_attempts row to
-    // the communities row, keeping a single source of truth for the credential.
-    const attempt = await community.getProvisionAttempt(attemptId);
-    if (!attempt?.encryptedPassword) {
-      return c.json(
-        {
-          error: "ProvisioningFailed",
-          message: "provision attempt missing encryptedPassword after activation",
-        },
-        502
-      );
+    // Idempotent graduation: if the community row already exists, the first
+    // call already wrote both the row and the reserved spaces. A retry with
+    // the same attemptId should return success without double-creating.
+    const alreadyGraduated = (await community.getCommunity(result.did)) != null;
+    if (!alreadyGraduated) {
+      // Hand the already-encrypted password from the provision_attempts row
+      // to the communities row, keeping a single source of truth for the
+      // credential.
+      const attempt = await community.getProvisionAttempt(attemptId);
+      if (!attempt?.encryptedPassword) {
+        return c.json(
+          {
+            error: "ProvisioningFailed",
+            message: "provision attempt missing encryptedPassword after activation",
+          },
+          502
+        );
+      }
+
+      await community.createFromProvisioned({
+        did: result.did,
+        pdsEndpoint: body.pdsEndpoint,
+        handle: body.handle,
+        appPasswordEncrypted: attempt.encryptedPassword,
+        createdBy: sa.issuer,
+      });
+
+      await bootstrapReservedSpaces({
+        communityDid: result.did,
+        creatorDid: sa.issuer,
+        spaces,
+        community,
+        type: spaceType,
+        serviceDid: spaceServiceDid,
+      });
     }
-
-    await community.createFromProvisioned({
-      did: result.did,
-      pdsEndpoint: body.pdsEndpoint,
-      handle: body.handle,
-      appPasswordEncrypted: attempt.encryptedPassword,
-      createdBy: sa.issuer,
-    });
-
-    await bootstrapReservedSpaces({
-      communityDid: result.did,
-      creatorDid: sa.issuer,
-      spaces,
-      community,
-      type: spaceType,
-      serviceDid: spaceServiceDid,
-    });
 
     const responseBody: {
       communityDid: string;

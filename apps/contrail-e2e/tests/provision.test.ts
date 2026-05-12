@@ -349,6 +349,7 @@ describe("community.provision + putRecord via XRPC route (devnet)", () => {
         plcDirectory: PLC_URL,
         resolver: createDevnetResolver(),
         fetch: countingFetch,
+        allowProvisioning: true,
       },
     });
     await contrail.init();

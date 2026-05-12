@@ -159,6 +159,7 @@ describe("community provision → grant → publish → RSVP walkthrough", () =>
         // atproto_pds entry. Rewrite outgoing requests so the proxied
         // publish lands on the host-mapped port.
         fetch: devnetRewriteFetch,
+        allowProvisioning: true,
       },
     });
     await contrail.init();
