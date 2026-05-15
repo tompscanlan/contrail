@@ -12,12 +12,22 @@ import { readInProcess } from "./in-process";
 
 export { ServiceJwtVerifier };
 
-/** Build a ServiceJwtVerifier from an AuthorityConfig, using the configured
- *  resolver or a default PLC+Web composite. The verifier checks that incoming
- *  JWTs target this authority's serviceDid (aud claim). */
-export function buildVerifier(authority: AuthorityConfig): ServiceJwtVerifier {
+/** Build a ServiceJwtVerifier from an AuthorityConfig, using (in precedence
+ *  order) the authority-specific resolver, then the deployment-wide
+ *  `networkOverrides.resolver`, then a default PLC+Web composite. The verifier
+ *  checks that incoming JWTs target this authority's serviceDid (aud claim).
+ *
+ *  `networkOverrides` is optional and is the same shape carried on
+ *  `ContrailConfig.networkOverrides` — callers with a ContrailConfig in scope
+ *  should pass `config.networkOverrides` so private-network deployments share
+ *  one resolver across both identity resolution and service-auth verification. */
+export function buildVerifier(
+  authority: AuthorityConfig,
+  networkOverrides?: { resolver?: DidDocumentResolver },
+): ServiceJwtVerifier {
   const resolver =
     authority.resolver ??
+    networkOverrides?.resolver ??
     new CompositeDidDocumentResolver({
       methods: {
         plc: new PlcDidDocumentResolver(),
