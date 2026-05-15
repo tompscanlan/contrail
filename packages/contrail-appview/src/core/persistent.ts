@@ -157,7 +157,7 @@ async function streamAndFlush(
       const uniqueDids = [...new Set(batch.map((e) => e.did))];
       if (uniqueDids.length > 0) {
         try {
-          await refreshStaleIdentities(db, uniqueDids);
+          await refreshStaleIdentities(db, uniqueDids, config);
         } catch (err) {
           log.warn(`Identity refresh failed: ${err}`);
         }

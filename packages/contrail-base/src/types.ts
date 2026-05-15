@@ -241,6 +241,37 @@ export interface ContrailConfig {
    *  ingests synthesized rows for any follower already in our identities
    *  table. Lets newcomers immediately appear in existing users' feeds. */
   constellation?: ConstellationConfig | false;
+  /** Network overrides for private-network or test deployments.
+   *  All subfields default to current public-internet behavior;
+   *  omitting `networkOverrides` entirely preserves current behavior.
+   *
+   *  SECURITY: `resolver` and `slingshotUrl` are taken at face value and are
+   *  NOT validated against the SSRF guard — the consumer is trusted to
+   *  configure them. Only the PDS URL returned downstream is validated,
+   *  and only `additionalAllowedHosts` widens that PDS validator. There is
+   *  no "disable SSRF" flag. */
+  networkOverrides?: {
+    /** DID document resolver used during the DID-doc PDS fallback. When
+     *  unset, contrail constructs a default `CompositeDidDocumentResolver`
+     *  with PLC + Web methods pointing at the upstream PLC directory.
+     *  Pass a custom resolver to point at a private PLC mirror, inject a
+     *  custom fetch (mTLS, retry, instrumentation), or swap in an
+     *  alternative DID method composition.
+     *  Mirrors the `AuthorityConfig.resolver` pattern in `spaces/types.ts`. */
+    resolver?: import("@atcute/identity-resolver").DidDocumentResolver;
+    /** Slingshot identity resolver URL override. Trusted; not SSRF-checked.
+     *  Default: https://slingshot.microcosm.blue/xrpc/com.bad-example.identity.resolveMiniDoc */
+    slingshotUrl?: string;
+    /** Hostnames (DNS names or IP literals) to allow past the default SSRF
+     *  guard when validating a resolved PDS URL.
+     *  For listed hostnames, the non-HTTPS + private-CIDR checks are skipped.
+     *  For all other hostnames, the default validator runs unchanged.
+     *  Match semantics: exact hostname, case-insensitive (entries are
+     *  lowercased on comparison; `URL.hostname` is already lowercased),
+     *  port-agnostic.
+     *  Example: ["pds.dev.svc.cluster.local"]. */
+    additionalAllowedHosts?: string[];
+  };
 }
 
 export interface ConstellationConfig {

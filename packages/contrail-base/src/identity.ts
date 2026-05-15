@@ -1,5 +1,5 @@
 import type { Did } from "@atcute/lexicons";
-import type { Database, Logger } from "./types";
+import type { ContrailConfig, Database, Logger } from "./types";
 import { isDid, isHandle } from "@atcute/lexicons/syntax";
 import { resolvePDS } from "./client";
 
@@ -28,9 +28,10 @@ function isStale(resolvedAt: number): boolean {
 async function fetchAndSave(
   db: Database,
   identifier: string,
-  cached?: Identity | null
+  cached?: Identity | null,
+  config?: ContrailConfig,
 ): Promise<Identity> {
-  const resolved = await resolvePDS(identifier);
+  const resolved = await resolvePDS(identifier, config);
   const identity: Identity = {
     did: resolved?.did ?? identifier,
     handle: resolved?.handle ?? cached?.handle ?? null,
@@ -43,7 +44,8 @@ async function fetchAndSave(
 
 export async function resolveIdentity(
   db: Database,
-  did: Did
+  did: Did,
+  config?: ContrailConfig,
 ): Promise<Identity> {
   const cached = await db
     .prepare("SELECT did, handle, pds, resolved_at FROM identities WHERE did = ?")
@@ -52,12 +54,13 @@ export async function resolveIdentity(
 
   if (cached && !isStale(cached.resolved_at)) return cached;
 
-  return fetchAndSave(db, did, cached);
+  return fetchAndSave(db, did, cached, config);
 }
 
 export async function resolveIdentities(
   db: Database,
-  dids: string[]
+  dids: string[],
+  config?: ContrailConfig,
 ): Promise<Map<string, Identity>> {
   const map = new Map<string, Identity>();
   if (dids.length === 0) return map;
@@ -80,7 +83,7 @@ export async function resolveIdentities(
   for (const did of dids) {
     if (map.has(did) || !isDid(did)) continue;
     try {
-      const identity = await fetchAndSave(db, did);
+      const identity = await fetchAndSave(db, did, undefined, config);
       map.set(did, identity);
     } catch {
       // Silently skip unresolvable identities
@@ -92,7 +95,8 @@ export async function resolveIdentities(
 
 export async function resolveActor(
   db: Database,
-  actor: string
+  actor: string,
+  config?: ContrailConfig,
 ): Promise<string | null> {
   if (isDid(actor)) return actor;
   if (!isHandle(actor)) return null;
@@ -106,7 +110,7 @@ export async function resolveActor(
   if (cached && !isStale(cached.resolved_at)) return cached.did;
 
   // Resolve via slingshot
-  const resolved = await resolvePDS(actor);
+  const resolved = await resolvePDS(actor, config);
   if (!resolved?.did || !isDid(resolved.did)) return null;
 
   await saveIdentity(db, {
@@ -139,7 +143,8 @@ export async function applyIdentityEvent(
 
 export async function refreshStaleIdentities(
   db: Database,
-  dids: string[]
+  dids: string[],
+  config?: ContrailConfig,
 ): Promise<void> {
   if (dids.length === 0) return;
 
@@ -169,7 +174,7 @@ export async function refreshStaleIdentities(
 
   for (const did of toRefresh) {
     try {
-      await fetchAndSave(db, did);
+      await fetchAndSave(db, did, undefined, config);
     } catch {
       // Silently skip unresolvable identities
     }
