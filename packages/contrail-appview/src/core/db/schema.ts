@@ -1,6 +1,6 @@
 import type { ContrailConfig, Database, ResolvedContrailConfig, ResolvedMaps } from "../types";
 import type { SqlDialect } from "../dialect";
-import { buildFtsSchema, getDialect } from "../dialect";
+import { buildFtsSchema, getDialect, postgresDialect } from "../dialect";
 import {
   getRelationField,
   countColumnName,
@@ -197,6 +197,93 @@ export function buildCountColumns(config: ContrailConfig, opts: BuilderOpts = {}
   return stmts;
 }
 
+/**
+ * Idempotently add a column to a table, surfacing real DDL errors.
+ *
+ * Postgres supports `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` natively, so we
+ * issue that and let any non-duplicate error propagate. SQLite (including
+ * `node:sqlite`) does NOT support `IF NOT EXISTS` on `ADD COLUMN`, so we
+ * pre-check `PRAGMA table_info` and short-circuit if the column is already
+ * there. Because the PRAGMA-check + ALTER pair is not atomic, a concurrent
+ * second `initSchema` call can still hit a "duplicate column name" race; we
+ * narrowly absorb exactly that error message and re-throw everything else.
+ *
+ * Net effect: only the duplicate-column case is absorbed. Missing tables,
+ * syntax errors, type mismatches, and any other DDL failure will throw.
+ *
+ * Exported for direct testing of the idempotency contract; callers in
+ * `initSchema` use this internally.
+ */
+export async function addColumnIfNotExists(
+  db: Database,
+  table: string,
+  column: string,
+  columnDef: string,
+): Promise<void> {
+  const dialect = getDialect(db);
+  if (dialect === postgresDialect) {
+    await db.prepare(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${columnDef}`,
+    ).run();
+    return;
+  }
+  // SQLite path: check existence first, then ALTER without IF NOT EXISTS.
+  // PRAGMA table_info() does not accept parameter binding, so we rely on the
+  // caller to pass a sanitized identifier (all current callers do — table
+  // names come from `recordsTableName`/`spacesRecordsTableName` which
+  // sanitize, and column names come from `countColumnName` /
+  // `groupedCountColumnName` which also sanitize).
+  const info = await db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all<{ name: string }>();
+  if (info.results.some((c) => c.name === column)) return;
+  try {
+    await db.prepare(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${columnDef}`,
+    ).run();
+  } catch (err) {
+    // Narrow swallow: only the "duplicate column" race between the PRAGMA
+    // read and the ALTER is acceptable. Everything else surfaces.
+    if (!isDuplicateColumnError(err)) throw err;
+  }
+}
+
+function isDuplicateColumnError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const msg = (err as { message?: unknown }).message;
+  if (typeof msg !== "string") return false;
+  // node:sqlite / better-sqlite3: "duplicate column name: <col>"
+  return /duplicate column name/i.test(msg);
+}
+
+/**
+ * Apply the ALTER+INDEX statements emitted by `buildCountColumns`
+ * idempotently and without swallowing non-duplicate errors.
+ *
+ * `buildCountColumns` mixes two statement shapes: `ALTER TABLE ... ADD COLUMN
+ *  ...` (not idempotent on SQLite without a pre-check; supports IF NOT EXISTS
+ *  on Postgres) and `CREATE INDEX IF NOT EXISTS ...` (idempotent on both
+ *  dialects). We route ALTERs through `addColumnIfNotExists` and run indexes
+ *  directly.
+ */
+export async function applyCountColumns(
+  db: Database,
+  config: ContrailConfig,
+  opts: BuilderOpts = {},
+): Promise<void> {
+  for (const stmt of buildCountColumns(config, opts)) {
+    const match = stmt.match(
+      /^ALTER TABLE\s+(\S+)\s+ADD COLUMN\s+(\S+)\s+(.+)$/i,
+    );
+    if (match) {
+      const [, table, column, columnDef] = match;
+      await addColumnIfNotExists(db, table, column, columnDef);
+    } else {
+      await db.prepare(stmt).run();
+    }
+  }
+}
+
 function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   if (!config.feeds || Object.keys(config.feeds).length === 0) return [];
   const stmts = [
@@ -250,22 +337,56 @@ export function buildFtsTables(
   return stmts;
 }
 
-const MIGRATIONS = [
-  "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE backfills ADD COLUMN last_error TEXT",
-  "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
-  "ALTER TABLE feed_backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE feed_backfills ADD COLUMN last_error TEXT",
-  "ALTER TABLE feed_backfills ADD COLUMN started_at BIGINT",
+/**
+ * Schema migrations expressed as structured ADD-COLUMN ops. Each entry is
+ * applied via `addColumnIfNotExists` so the operation is idempotent on both
+ * dialects without swallowing genuine DDL errors.
+ *
+ * `target: "spaces"` is routed to the spaces DB (which may differ from the
+ * main DB in split-DB deployments) and only applied when spaces is enabled.
+ * `target: "feeds"` is only applied when feeds are configured (the
+ * `feed_backfills` table doesn't exist otherwise). All other migrations
+ * target the main DB unconditionally.
+ */
+interface MigrationOp {
+  table: string;
+  column: string;
+  columnDef: string;
+  target?: "spaces" | "feeds";
+}
+
+const MIGRATIONS: MigrationOp[] = [
+  { table: "backfills", column: "retries", columnDef: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "backfills", column: "last_error", columnDef: "TEXT" },
+  {
+    table: "spaces_invites",
+    column: "kind",
+    columnDef: "TEXT NOT NULL DEFAULT 'join'",
+    target: "spaces",
+  },
+  { table: "feed_backfills", column: "retries", columnDef: "INTEGER NOT NULL DEFAULT 0", target: "feeds" },
+  { table: "feed_backfills", column: "last_error", columnDef: "TEXT", target: "feeds" },
+  { table: "feed_backfills", column: "started_at", columnDef: "BIGINT", target: "feeds" },
 ];
 
-async function runMigrations(db: Database): Promise<void> {
-  for (const sql of MIGRATIONS) {
-    try {
-      await db.prepare(sql).run();
-    } catch {
-      // Column already exists — ignore
+async function runMigrations(
+  db: Database,
+  spacesDb: Database | undefined,
+  hasSpaces: boolean,
+  hasFeeds: boolean,
+): Promise<void> {
+  for (const op of MIGRATIONS) {
+    if (op.target === "spaces") {
+      if (!hasSpaces) continue;
+      await addColumnIfNotExists(spacesDb ?? db, op.table, op.column, op.columnDef);
+      continue;
     }
+    if (op.target === "feeds") {
+      if (!hasFeeds) continue;
+      await addColumnIfNotExists(db, op.table, op.column, op.columnDef);
+      continue;
+    }
+    await addColumnIfNotExists(db, op.table, op.column, op.columnDef);
   }
 }
 
@@ -296,9 +417,9 @@ async function applySpacesSchema(
   for (const stmt of ftsStmts) {
     try { await target.prepare(stmt).run(); } catch { /* FTS5 unavailable */ }
   }
-  for (const stmt of buildCountColumns(config, { forSpaces: true })) {
-    try { await target.prepare(stmt).run(); } catch { /* already exists */ }
-  }
+  // Idempotent count-column ALTERs + their indexes. Non-duplicate-column
+  // errors propagate.
+  await applyCountColumns(target, config, { forSpaces: true });
 }
 
 export async function initSchema(
@@ -350,14 +471,14 @@ export async function initSchema(
       // FTS5 not supported in this environment
     }
   }
-  await runMigrations(db);
+  const hasSpaces = !!(config.spaces?.authority || config.spaces?.recordHost);
+  const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
+  // Spaces-targeted migrations route to spacesDb when one is configured;
+  // otherwise they hit the main db (which is where the spaces tables live
+  // when no separate spacesDb is supplied).
+  await runMigrations(db, spacesSharesMainDb ? undefined : spacesDb, hasSpaces, hasFeeds);
 
-  // Add count columns (ALTER TABLE — may already exist)
-  for (const stmt of buildCountColumns(config)) {
-    try {
-      await db.prepare(stmt).run();
-    } catch {
-      // Column/index already exists — ignore
-    }
-  }
+  // Idempotent count-column ALTERs + their indexes. Routed through
+  // `applyCountColumns` so non-duplicate-column errors propagate.
+  await applyCountColumns(db, config);
 }

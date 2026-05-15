@@ -5,7 +5,7 @@ import {
   buildCollectionTables,
   buildDynamicIndexes,
   buildFtsTables,
-  buildCountColumns,
+  applyCountColumns,
 } from "../db/schema";
 
 /** Spaces metadata tables — spaces, members, invites. No per-collection tables. */
@@ -76,8 +76,9 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
 
 /** Full spaces schema (base + per-collection tables + indexes). For callers
  *  that need a single array of statements. Note: this does NOT include FTS
- *  virtual tables or ALTER TABLE count columns — those must be applied with
- *  try/catch fallbacks and are handled by `initSchema`. */
+ *  virtual tables or ALTER TABLE count columns — FTS is best-effort (engine
+ *  may not be present) and count columns require dialect-aware idempotent
+ *  ALTER. Both are handled by `initSchema` / `initSpacesSchema`. */
 export function buildSpacesSchema(db: Database, config?: ContrailConfig): string[] {
   const dialect = getDialect(db);
   const base = buildSpacesBaseSchema(dialect);
@@ -94,10 +95,10 @@ export async function initSpacesSchema(db: Database, config?: ContrailConfig): P
   const stmts = buildSpacesSchema(db, config);
   await db.batch(stmts.map((s) => db.prepare(s)));
   if (!config) return;
+  // FTS virtual tables: best-effort; the runtime may not have FTS5 compiled
+  // in (e.g. node:sqlite). Other DDL failures (count columns) propagate.
   for (const stmt of buildFtsTables(config, dialect, { forSpaces: true })) {
-    try { await db.prepare(stmt).run(); } catch { /* ignore */ }
+    try { await db.prepare(stmt).run(); } catch { /* FTS5 unavailable */ }
   }
-  for (const stmt of buildCountColumns(config, { forSpaces: true })) {
-    try { await db.prepare(stmt).run(); } catch { /* ignore */ }
-  }
+  await applyCountColumns(db, config, { forSpaces: true });
 }
