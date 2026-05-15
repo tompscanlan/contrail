@@ -54,7 +54,7 @@ export function registerSpacesRoutes(
   if (!authorityConfig) return;
 
   const adapter = options.adapter ?? ctx?.adapter ?? new HostedAdapter(db, config);
-  const verifier = ctx?.verifier ?? buildVerifier(authorityConfig);
+  const verifier = ctx?.verifier ?? buildVerifier(authorityConfig, config.networkOverrides);
   const auth = options.authMiddleware ?? createServiceAuthMiddleware(verifier);
 
   const localRecordHost = spacesConfig.recordHost ? adapter : null;

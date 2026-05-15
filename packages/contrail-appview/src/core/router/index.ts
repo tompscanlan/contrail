@@ -138,7 +138,7 @@ export function createApp(
       : config.spaces?.authority
         ? {
             adapter: options.spaces?.adapter ?? new HostedAdapter(spacesDb, config),
-            verifier: buildVerifier(config.spaces.authority),
+            verifier: buildVerifier(config.spaces.authority, config.networkOverrides),
             manifestVerifier: config.spaces.authority.signing
               ? createManifestVerifier({
                   resolveKey: async (iss) =>
