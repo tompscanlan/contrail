@@ -2,11 +2,12 @@ import {
   CompositeDidDocumentResolver,
   PlcDidDocumentResolver,
   WebDidDocumentResolver,
+  type DidDocumentResolver,
 } from "@atcute/identity-resolver";
 import { type Did } from "@atcute/lexicons";
 import { Client, simpleFetchHandler } from "@atcute/client";
 import type {} from "@atcute/atproto";
-import type { Database } from "./types";
+import type { ContrailConfig, Database } from "./types";
 
 // Slingshot-first PDS resolution with fallback to DID document resolution
 const SLINGSHOT_URL =
@@ -18,28 +19,36 @@ export interface ResolvedIdentity {
   pds: string | null;
 }
 
-/** Reject PDS URLs that point to private/internal addresses or non-HTTPS */
-function validatePdsUrl(url: string): boolean {
+/** Reject PDS URLs that point to private/internal addresses or non-HTTPS.
+ *  Hostnames in `additionalAllowedHosts` skip both checks. Match is exact,
+ *  case-insensitive (allowlist entries are lowercased on compare; `URL.hostname`
+ *  is already lowercased), and port-agnostic. */
+function validatePdsUrl(url: string, additionalAllowedHosts?: string[]): boolean {
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    const host = parsed.hostname;
-    // Block private/internal IP ranges
-    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return false;
-    if (host.startsWith("10.")) return false;
-    if (host.startsWith("192.168.")) return false;
-    if (host.startsWith("169.254.")) return false;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
-    return true;
+    parsed = new URL(url);
   } catch {
     return false;
   }
+  if (additionalAllowedHosts?.some((h) => h.toLowerCase() === parsed.hostname)) {
+    return true;
+  }
+  if (parsed.protocol !== "https:") return false;
+  const host = parsed.hostname;
+  // Block private/internal IP ranges
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return false;
+  if (host.startsWith("10.")) return false;
+  if (host.startsWith("192.168.")) return false;
+  if (host.startsWith("169.254.")) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  return true;
 }
 
 async function resolveViaSlingshot(
-  identifier: string
+  identifier: string,
+  slingshotUrl: string,
 ): Promise<ResolvedIdentity | undefined> {
-  const url = new URL(SLINGSHOT_URL);
+  const url = new URL(slingshotUrl);
   url.searchParams.set("identifier", identifier);
 
   try {
@@ -61,15 +70,19 @@ async function resolveViaSlingshot(
   }
 }
 
-const didResolver = new CompositeDidDocumentResolver({
+const DEFAULT_DID_RESOLVER: DidDocumentResolver = new CompositeDidDocumentResolver({
   methods: {
     plc: new PlcDidDocumentResolver(),
     web: new WebDidDocumentResolver(),
   },
 });
 
-async function getPDSViaDidDoc(did: Did): Promise<string | undefined> {
-  const doc = await didResolver.resolve(did as Did<"plc"> | Did<"web">);
+async function getPDSViaDidDoc(
+  did: Did,
+  config?: ContrailConfig,
+): Promise<string | undefined> {
+  const resolver = config?.networkOverrides?.resolver ?? DEFAULT_DID_RESOLVER;
+  const doc = await resolver.resolve(did as Did<"plc"> | Did<"web">);
   return doc.service
     ?.find((s) => s.id === "#atproto_pds")
     ?.serviceEndpoint.toString();
@@ -78,21 +91,28 @@ async function getPDSViaDidDoc(did: Did): Promise<string | undefined> {
 /**
  * Resolve identity info (did, handle, pds) for a DID or handle.
  * Uses slingshot first, falls back to DID doc for PDS.
+ *
+ * `config?.networkOverrides` (optional): customize the slingshot endpoint,
+ * the PLC URL used during DID-doc fallback, and/or which hostnames bypass
+ * the default SSRF guard. Omitting `config` preserves all defaults.
  */
 export async function resolvePDS(
-  identifier: string
+  identifier: string,
+  config?: ContrailConfig,
 ): Promise<ResolvedIdentity | undefined> {
-  const result = await resolveViaSlingshot(identifier);
+  const slingshotUrl = config?.networkOverrides?.slingshotUrl ?? SLINGSHOT_URL;
+  const allowed = config?.networkOverrides?.additionalAllowedHosts;
+  const result = await resolveViaSlingshot(identifier, slingshotUrl);
   if (result?.pds) {
-    if (!validatePdsUrl(result.pds)) return { ...result, pds: null };
+    if (!validatePdsUrl(result.pds, allowed)) return { ...result, pds: null };
     return result;
   }
 
   // Fall back to DID doc resolution (only works for DIDs, not handles)
   if (identifier.startsWith("did:")) {
     try {
-      const pds = await getPDSViaDidDoc(identifier as Did);
-      if (pds && validatePdsUrl(pds)) {
+      const pds = await getPDSViaDidDoc(identifier as Did, config);
+      if (pds && validatePdsUrl(pds, allowed)) {
         return {
           did: identifier,
           handle: result?.handle ?? null,
@@ -134,7 +154,8 @@ function pdsCacheSet(did: string, pds: string): void {
 
 export async function getPDS(
   did: Did,
-  db?: Database
+  db?: Database,
+  config?: ContrailConfig,
 ): Promise<string | undefined> {
   const mem = pdsCacheGet(did);
   if (mem) return mem;
@@ -143,7 +164,7 @@ export async function getPDS(
   const inflight = pdsInflight.get(did);
   if (inflight) return inflight;
 
-  const promise = resolvePDSCached(did, db);
+  const promise = resolvePDSCached(did, db, config);
   pdsInflight.set(did, promise);
   try {
     return await promise;
@@ -154,7 +175,8 @@ export async function getPDS(
 
 async function resolvePDSCached(
   did: Did,
-  db?: Database
+  db?: Database,
+  config?: ContrailConfig,
 ): Promise<string | undefined> {
   if (db) {
     const cached = await db
@@ -167,7 +189,7 @@ async function resolvePDSCached(
     }
   }
 
-  const resolved = await resolvePDS(did);
+  const resolved = await resolvePDS(did, config);
   if (!resolved?.pds) return undefined;
 
   pdsCacheSet(did, resolved.pds);
@@ -185,10 +207,21 @@ async function resolvePDSCached(
   return resolved.pds;
 }
 
-export async function getClient(did: Did, db?: Database): Promise<Client> {
-  const pds = await getPDS(did, db);
+export async function getClient(
+  did: Did,
+  db?: Database,
+  config?: ContrailConfig,
+): Promise<Client> {
+  const pds = await getPDS(did, db, config);
   if (!pds) throw new Error(`PDS not found for ${did}`);
   return new Client({
     handler: simpleFetchHandler({ service: pds }),
   });
+}
+
+/** Test-only: clear module-level PDS caches. Production code MUST NOT call this.
+ *  Exported with a `__` prefix to signal it is not part of the public API. */
+export function __resetPdsCachesForTests(): void {
+  pdsCache.clear();
+  pdsInflight.clear();
 }
