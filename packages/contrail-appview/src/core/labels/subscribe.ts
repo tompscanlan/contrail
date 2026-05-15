@@ -36,7 +36,15 @@ export async function runLabelIngestCycle(
     }
     const remaining = Math.max(2_000, deadline - Date.now());
     try {
-      await pumpOneLabeler(db, source, log, remaining, /* persistent */ false);
+      await pumpOneLabeler(
+        db,
+        source,
+        log,
+        remaining,
+        /* persistent */ false,
+        {},
+        config.networkOverrides,
+      );
     } catch (err) {
       log.warn(`[labels] cycle for ${source.did} failed: ${err}`);
     }
@@ -62,7 +70,7 @@ export async function runPersistentLabels(
   const signal = options.signal;
 
   const tasks = config.labels.sources.map((source) =>
-    runOneLabelerForever(db, source, log, signal, options),
+    runOneLabelerForever(db, source, log, signal, options, config.networkOverrides),
   );
   await Promise.all(tasks);
 }
@@ -73,15 +81,24 @@ async function runOneLabelerForever(
   log: Logger,
   signal: AbortSignal | undefined,
   options: PersistentLabelsOptions,
+  networkOverrides: ContrailConfig["networkOverrides"],
 ): Promise<void> {
   let attempts = 0;
   while (!signal?.aborted) {
     try {
-      await pumpOneLabeler(db, source, log, /* timeoutMs */ Infinity, true, {
-        signal,
-        batchSize: options.batchSize ?? DEFAULT_BATCH_SIZE,
-        flushIntervalMs: options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
-      });
+      await pumpOneLabeler(
+        db,
+        source,
+        log,
+        /* timeoutMs */ Infinity,
+        true,
+        {
+          signal,
+          batchSize: options.batchSize ?? DEFAULT_BATCH_SIZE,
+          flushIntervalMs: options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
+        },
+        networkOverrides,
+      );
       attempts = 0;
     } catch (err) {
       if (signal?.aborted) break;
@@ -114,8 +131,9 @@ async function pumpOneLabeler(
   timeoutMs: number,
   persistent: boolean,
   pumpOpts: PumpOptions = {},
+  networkOverrides?: ContrailConfig["networkOverrides"],
 ): Promise<void> {
-  const state = await getLabelerState(db, source.did, source.endpoint);
+  const state = await getLabelerState(db, source.did, source.endpoint, networkOverrides);
   if (!state) {
     log.warn(`[labels] could not resolve labeler endpoint for ${source.did}; skipping`);
     return;
