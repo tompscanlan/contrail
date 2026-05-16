@@ -257,6 +257,48 @@ function isDuplicateColumnError(err: unknown): boolean {
 }
 
 /**
+ * Postgres `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` are
+ * NOT atomic against concurrent creators: two transactions can both pass the
+ * existence check before either has inserted into `pg_class` / `pg_type`. The
+ * loser raises 23505 on `pg_type_typname_nsp_index` (the unique index on
+ * `(typname, typnamespace)`) or `pg_class_relname_nsp_index`. Pre-existing
+ * tables also surface as 42P07 (`duplicate_table`).
+ *
+ * SQLite serializes DDL globally, so this race never manifests there.
+ *
+ * The caller is expected to issue idempotent DDL (IF NOT EXISTS); this helper
+ * only absorbs the narrow concurrent-create race.
+ */
+function isConcurrentCreateError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "42P07" || code === "42P06") return true;
+  if (code === "23505") {
+    const constraint = (err as { constraint?: unknown }).constraint;
+    return (
+      constraint === "pg_type_typname_nsp_index" ||
+      constraint === "pg_class_relname_nsp_index" ||
+      constraint === "pg_namespace_nspname_index"
+    );
+  }
+  return false;
+}
+
+/**
+ * Run a single DDL statement, absorbing only the concurrent-create race that
+ * `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` can hit on
+ * Postgres when multiple processes init the same schema in parallel. Genuine
+ * DDL errors (syntax, type mismatch, missing column) surface unchanged.
+ */
+async function runIdempotentDdl(db: Database, stmt: string): Promise<void> {
+  try {
+    await db.prepare(stmt).run();
+  } catch (err) {
+    if (!isConcurrentCreateError(err)) throw err;
+  }
+}
+
+/**
  * Apply the ALTER+INDEX statements emitted by `buildCountColumns`
  * idempotently and without swallowing non-duplicate errors.
  *
@@ -411,7 +453,12 @@ async function applySpacesSchema(
   const base = buildSpacesBaseSchema(dialect);
   const perCollection = buildCollectionTables(config, dialect, { forSpaces: true });
   const indexes = buildDynamicIndexes(config, dialect, { forSpaces: true });
-  await target.batch([...base, ...perCollection, ...indexes].map((s) => target.prepare(s)));
+  // Per-statement (not batched) so concurrent applySpacesSchema on Postgres
+  // races only on the individual CREATE statements; see initSchema for
+  // rationale.
+  for (const stmt of [...base, ...perCollection, ...indexes]) {
+    await runIdempotentDdl(target, stmt);
+  }
 
   const ftsStmts = buildFtsTables(config, dialect, { forSpaces: true });
   for (const stmt of ftsStmts) {
@@ -441,7 +488,13 @@ export async function initSchema(
 
   const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...feedStatements];
 
-  await db.batch(all.map((s) => db.prepare(s)));
+  // Per-statement run (not a batched transaction) so concurrent initSchema
+  // callers on Postgres race only on individual CREATEs; the loser's
+  // duplicate-relation error is absorbed by runIdempotentDdl. Each statement
+  // is already idempotent (IF NOT EXISTS).
+  for (const stmt of all) {
+    await runIdempotentDdl(db, stmt);
+  }
 
   if (config.spaces?.authority || config.spaces?.recordHost) {
     await applySpacesSchema(spacesSharesMainDb ? db : spacesDb!, config, dialect);
@@ -460,7 +513,9 @@ export async function initSchema(
     // Labels tables live on the main DB — they're keyed by at-URI / DID and
     // are read alongside public records during hydration.
     const labelsStmts = buildLabelsSchema(dialect);
-    await db.batch(labelsStmts.map((s) => db.prepare(s)));
+    for (const stmt of labelsStmts) {
+      await runIdempotentDdl(db, stmt);
+    }
   }
 
   // FTS5 may not be available (e.g. node:sqlite) — skip gracefully
