@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { initSchema } from "../src/core/db/schema";
-import { createTestDb, TEST_CONFIG } from "./helpers";
+import { initCommunitySchema } from "../src/core/community/schema";
+import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 
 describe("initSchema", () => {
   it("creates all required tables", async () => {
@@ -55,3 +56,19 @@ describe("initSchema", () => {
     await initSchema(db, TEST_CONFIG);
   });
 });
+
+describe("provision_attempts schema", () => {
+  it("enforces status enum", async () => {
+    const db = await createTestDbWithSchema();
+    await initCommunitySchema(db);
+    await expect(
+      db
+        .prepare(
+          "INSERT INTO provision_attempts (attempt_id, did, status, created_at, updated_at, pds_endpoint, handle, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind("a1", "did:plc:x", "bogus", 1, 1, "https://pds", "h.test", "x@x")
+        .run()
+    ).rejects.toThrow();
+  });
+});
+
