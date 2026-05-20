@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pdsCreateAccount } from "../src/core/community/pds";
+import { pdsCreateAccount } from "../src/pds";
 
 describe("pdsCreateAccount", () => {
   it("posts createAccount with bearer auth and returns session", async () => {

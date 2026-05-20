@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { initCommunitySchema } from "../src/core/community/schema";
-import { CommunityAdapter } from "../src/core/community/adapter";
-import { CredentialCipher } from "../src/core/community/credentials";
-import { ProvisionOrchestrator } from "../src/core/community/provision";
-import { createTestDbWithSchema } from "./helpers";
+import { initCommunitySchema } from "../src/schema";
+import { CommunityAdapter } from "../src/adapter";
+import { CredentialCipher } from "../src/credentials";
+import { ProvisionOrchestrator } from "../src/provision";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 
 const STUB_ROTATION_KEY = "did:key:zStubCallerRotationKeyForTests";
 
@@ -54,7 +54,7 @@ describe("ProvisionOrchestrator", () => {
   let adapter: CommunityAdapter;
   let cipher: CredentialCipher;
   beforeEach(async () => {
-    const db = await createTestDbWithSchema();
+    const db = createSqliteDatabase(":memory:");
     await initCommunitySchema(db);
     cipher = new CredentialCipher(new Uint8Array(32).fill(99));
     adapter = new CommunityAdapter(db);

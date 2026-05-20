@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { mintServiceAuthJwt } from "../src/core/community/service-auth";
-import { generateKeyPair } from "../src/core/community/plc";
+import { mintServiceAuthJwt } from "../src/service-auth";
+import { generateKeyPair } from "../src/plc";
 
 function b64urlDecode(s: string): Uint8Array {
   const normal = s.replace(/-/g, "+").replace(/_/g, "/");

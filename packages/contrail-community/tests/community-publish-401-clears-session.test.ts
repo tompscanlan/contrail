@@ -7,18 +7,19 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { createApp } from "../src/core/router";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { initSchema } from "@atmo-dev/contrail";
+import { createApp } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "../src/integration";
+import { resolveConfig } from "@atmo-dev/contrail";
+import type { ContrailConfig } from "@atmo-dev/contrail";
 import {
   CommunityAdapter,
   CredentialCipher,
   RESERVED_KEYS,
-} from "../src/core/community";
-import { HostedAdapter } from "../src/core/spaces/adapter";
-import { buildSpaceUri } from "../src/core/spaces/uri";
+} from "../src";
+import { HostedAdapter } from "@atmo-dev/contrail";
+import { buildSpaceUri } from "@atmo-dev/contrail";
 
 const ALICE = "did:plc:alice";
 const COMMUNITY_DID = "did:plc:l6comm";
@@ -60,16 +61,21 @@ async function build(): Promise<{ app: Hono; adapter: CommunityAdapter }> {
     namespace: "test.comm",
     collections: { message: { collection: "app.event.message" } },
     spaces: {
-      type: "tools.atmo.event.space",
-      serviceDid: "did:web:test.example#svc",
+      authority: {
+        type: "tools.atmo.event.space",
+        serviceDid: "did:web:test.example#svc",
+      },
+      recordHost: {},
     },
     community: { masterKey: MASTER_KEY, fetch: fetchImpl },
   };
   const db = createSqliteDatabase(":memory:");
   const resolved = resolveConfig(config);
-  await initSchema(db, resolved);
+  const communityIntegration = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [communityIntegration.applySchema] });
   const app = createApp(db, resolved, {
-    spaces: { authMiddleware: fakeAuth(config.spaces!.serviceDid) },
+    spaces: { authMiddleware: fakeAuth(config.spaces!.authority!.serviceDid) },
+    community: communityIntegration,
   });
 
   const cipher = new CredentialCipher(MASTER_KEY);
@@ -85,15 +91,15 @@ async function build(): Promise<{ app: Hono; adapter: CommunityAdapter }> {
   for (const key of RESERVED_KEYS) {
     const uri = buildSpaceUri({
       ownerDid: COMMUNITY_DID,
-      type: config.spaces!.type,
+      type: config.spaces!.authority!.type,
       key,
     });
     await spaces.createSpace({
       uri,
       ownerDid: COMMUNITY_DID,
-      type: config.spaces!.type,
+      type: config.spaces!.authority!.type,
       key,
-      serviceDid: config.spaces!.serviceDid,
+      serviceDid: config.spaces!.authority!.serviceDid,
       appPolicyRef: null,
       appPolicy: null,
     });

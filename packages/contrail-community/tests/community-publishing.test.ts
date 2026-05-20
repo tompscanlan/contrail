@@ -107,10 +107,11 @@ async function makeApp(): Promise<{ app: Hono; db: Database }> {
   const resolved = resolveConfig(CONFIG);
   const community = createCommunityIntegration({ db, config: resolved });
   await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
-  return createApp(db, resolved, {
+  const app = createApp(db, resolved, {
     spaces: { authMiddleware: fakeAuth() },
     community,
   });
+  return { app, db };
 }
 
 /** Seed a provision-mode community + its reserved spaces with `creator` as
@@ -135,15 +136,15 @@ async function seedProvisionCommunity(
   for (const key of RESERVED_KEYS) {
     const uri = buildSpaceUri({
       ownerDid: PROVISION_COMMUNITY_DID,
-      type: CONFIG.spaces!.type,
+      type: CONFIG.spaces!.authority!.type,
       key,
     });
     await spaces.createSpace({
       uri,
       ownerDid: PROVISION_COMMUNITY_DID,
-      type: CONFIG.spaces!.type,
+      type: CONFIG.spaces!.authority!.type,
       key,
-      serviceDid: CONFIG.spaces!.serviceDid,
+      serviceDid: CONFIG.spaces!.authority!.serviceDid,
       appPolicyRef: null,
       appPolicy: null,
     });
@@ -404,8 +405,12 @@ async function makeScenarioApp(scenario: {
   };
   const db = createSqliteDatabase(":memory:");
   const resolved = resolveConfig(cfg);
-  await initSchema(db, resolved);
-  const app = createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+  const communityIntegration = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [communityIntegration.applySchema] });
+  const app = createApp(db, resolved, {
+    spaces: { authMiddleware: fakeAuth() },
+    community: communityIntegration,
+  });
   // Seed provision community + Alice as owner of $publishers.
   const cipher = new CredentialCipher(MASTER_KEY);
   const encrypted = await cipher.encrypt("correct-pw");
@@ -421,15 +426,15 @@ async function makeScenarioApp(scenario: {
   for (const key of RESERVED_KEYS) {
     const uri = buildSpaceUri({
       ownerDid: PROVISION_COMMUNITY_DID,
-      type: CONFIG.spaces!.type,
+      type: CONFIG.spaces!.authority!.type,
       key,
     });
     await spacesAdp.createSpace({
       uri,
       ownerDid: PROVISION_COMMUNITY_DID,
-      type: CONFIG.spaces!.type,
+      type: CONFIG.spaces!.authority!.type,
       key,
-      serviceDid: CONFIG.spaces!.serviceDid,
+      serviceDid: CONFIG.spaces!.authority!.serviceDid,
       appPolicyRef: null,
       appPolicy: null,
     });

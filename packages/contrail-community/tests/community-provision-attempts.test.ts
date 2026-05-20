@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { initCommunitySchema } from "../src/core/community/schema";
-import { CommunityAdapter } from "../src/core/community/adapter";
-import { createTestDbWithSchema } from "./helpers";
+import { initCommunitySchema } from "../src/schema";
+import { CommunityAdapter } from "../src/adapter";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 
 describe("provision_attempts adapter", () => {
   let adapter: CommunityAdapter;
 
   beforeEach(async () => {
-    const db = await createTestDbWithSchema();
+    const db = createSqliteDatabase(":memory:");
     await initCommunitySchema(db);
     adapter = new CommunityAdapter(db);
   });

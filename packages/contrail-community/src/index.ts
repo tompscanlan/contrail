@@ -79,3 +79,11 @@ export type {
   ProvisionResult,
   ProvisionOrchestratorDeps,
 } from "./provision";
+
+export { registerReap, runReap } from "./cli/reap";
+export type {
+  ReapLogger,
+  ReapHostDeps,
+  RunReapOptions,
+  RunReapResult,
+} from "./cli/reap";

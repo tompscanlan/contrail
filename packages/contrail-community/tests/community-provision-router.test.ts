@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { createApp } from "../src/core/router";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { initSchema } from "@atmo-dev/contrail";
+import { createApp } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "../src/integration";
+import { resolveConfig } from "@atmo-dev/contrail";
+import type { ContrailConfig } from "@atmo-dev/contrail";
 
 const ALICE = "did:plc:alice";
 const MASTER_KEY = new Uint8Array(32).fill(99);
@@ -104,8 +105,11 @@ const CONFIG: ContrailConfig = {
   namespace: "test.comm",
   collections: { message: { collection: "app.event.message" } },
   spaces: {
-    type: "tools.atmo.event.space",
-    serviceDid: "did:web:test.example#svc",
+    authority: {
+      type: "tools.atmo.event.space",
+      serviceDid: "did:web:test.example#svc",
+    },
+    recordHost: {},
   },
   community: {
     masterKey: MASTER_KEY,
@@ -119,7 +123,7 @@ function fakeAuth(): MiddlewareHandler {
   return async (c, next) => {
     const did = c.req.header("X-Test-Did");
     if (!did) return c.json({ error: "AuthRequired" }, 401);
-    c.set("serviceAuth", { issuer: did, audience: CONFIG.spaces!.serviceDid, lxm: undefined });
+    c.set("serviceAuth", { issuer: did, audience: CONFIG.spaces!.authority!.serviceDid, lxm: undefined });
     await next();
   };
 }
@@ -127,8 +131,9 @@ function fakeAuth(): MiddlewareHandler {
 async function makeApp(): Promise<Hono> {
   const db = createSqliteDatabase(":memory:");
   const resolved = resolveConfig(CONFIG);
-  await initSchema(db, resolved);
-  return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+  const community = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
+  return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() }, community });
 }
 
 async function call(
@@ -163,8 +168,9 @@ describe("POST /xrpc/{ns}.community.provision (allowProvisioning gate)", () => {
       community: { ...CONFIG.community!, allowProvisioning: undefined } as any,
     };
     const resolved = resolveConfig(configWithoutFlag);
-    await initSchema(db, resolved);
-    return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+    const community = createCommunityIntegration({ db, config: resolved });
+    await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
+    return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() }, community });
   }
 
   it("returns 403 ProvisioningDisabled when allowProvisioning is not set", async () => {
@@ -323,6 +329,6 @@ describe("POST /xrpc/{ns}.community.provision", () => {
 
     expect(claims.aud).toBe(PDS_DESCRIBE_DID);
     // Sanity: it is NOT the spaces serviceDid (the previous hardcoded value).
-    expect(claims.aud).not.toBe(CONFIG.spaces!.serviceDid);
+    expect(claims.aud).not.toBe(CONFIG.spaces!.authority!.serviceDid);
   });
 });

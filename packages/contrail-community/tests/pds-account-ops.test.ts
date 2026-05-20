@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
-} from "../src/core/community/pds";
+} from "../src/pds";
 
 describe("pdsGetRecommendedDidCredentials", () => {
   it("issues GET to the identity endpoint with bearer accessJwt and parses response", async () => {

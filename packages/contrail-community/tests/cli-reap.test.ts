@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { initCommunitySchema } from "../src/core/community/schema";
-import { CommunityAdapter } from "../src/core/community/adapter";
-import { CredentialCipher } from "../src/core/community/credentials";
+import type { Database } from "@atmo-dev/contrail-base";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { initCommunitySchema } from "../src/schema";
+import { CommunityAdapter } from "../src/adapter";
+import { CredentialCipher } from "../src/credentials";
 import {
   generateKeyPair,
   buildTombstoneOp,
@@ -9,10 +11,8 @@ import {
   submitTombstoneOp,
   cidForOp,
   type SignedGenesisOp,
-} from "../src/core/community/plc";
-import { runReap } from "../src/cli/commands/reap";
-import type { Database } from "../src/core/types";
-import { createTestDbWithSchema } from "./helpers";
+} from "../src/plc";
+import { runReap } from "../src/cli/reap";
 
 type SeedStatus =
   | "keys_generated"
@@ -103,7 +103,7 @@ describe("runReap (cli reap)", () => {
   let cipher: CredentialCipher;
 
   beforeEach(async () => {
-    db = await createTestDbWithSchema();
+    db = createSqliteDatabase(":memory:");
     await initCommunitySchema(db);
     cipher = new CredentialCipher(new Uint8Array(32).fill(7));
     adapter = new CommunityAdapter(db);

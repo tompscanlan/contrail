@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { createApp } from "../src/core/router";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
-import { normalizePdsEndpoint } from "../src/core/community/pds";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { initSchema } from "@atmo-dev/contrail";
+import { createApp } from "@atmo-dev/contrail";
+import { resolveConfig } from "@atmo-dev/contrail";
+import type { ContrailConfig } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "../src/integration";
+import { normalizePdsEndpoint } from "../src/pds";
 
 const ALICE = "did:plc:alice";
 const MASTER_KEY = new Uint8Array(32).fill(99);
@@ -77,8 +78,11 @@ function buildConfig(allowedPdsEndpoints: string[] | undefined): ContrailConfig 
     namespace: "test.comm",
     collections: { message: { collection: "app.event.message" } },
     spaces: {
-      type: "tools.atmo.event.space",
-      serviceDid: "did:web:test.example#svc",
+      authority: {
+        type: "tools.atmo.event.space",
+        serviceDid: "did:web:test.example#svc",
+      },
+      recordHost: {},
     },
     community: {
       masterKey: MASTER_KEY,
@@ -103,8 +107,9 @@ async function makeApp(allowedPdsEndpoints: string[] | undefined): Promise<Hono>
   const db = createSqliteDatabase(":memory:");
   const cfg = buildConfig(allowedPdsEndpoints);
   const resolved = resolveConfig(cfg);
-  await initSchema(db, resolved);
-  return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+  const community = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
+  return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() }, community });
 }
 
 async function call(app: Hono, body: any): Promise<Response> {

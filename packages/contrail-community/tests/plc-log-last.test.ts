@@ -4,7 +4,7 @@ import {
   getLastOpCid,
   type SignedGenesisOp,
   type SignedTombstoneOp,
-} from "../src/core/community/plc";
+} from "../src/plc";
 
 const GENESIS_OP: SignedGenesisOp = {
   type: "plc_operation",

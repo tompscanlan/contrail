@@ -1,15 +1,16 @@
 import type { CAC } from "cac";
-import type { CommunityAdapter } from "../../core/community/adapter.js";
-import type { CredentialCipher } from "../../core/community/credentials.js";
-import type { Database } from "../../core/types.js";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import type { Database } from "@atmo-dev/contrail-base";
+import { CommunityAdapter } from "../adapter.js";
+import { CredentialCipher } from "../credentials.js";
 import {
   buildTombstoneOp,
   cidForOp,
   getLastOpCid,
   signTombstoneOp,
   submitTombstoneOp,
-} from "../../core/community/plc.js";
-import { promptYesNo, resolveAndLoadConfig } from "../shared.js";
+} from "../plc.js";
 
 interface ReapOpts {
   config?: string;
@@ -53,6 +54,26 @@ export interface RunReapResult {
   dryRunSkipped: number;
   /** Number of rows that errored out during reap (activated row, PLC error, etc.). */
   errors: number;
+}
+
+/** Yes/no prompt that respects --yes (auto-accept) and falls back to the
+ *  provided default in non-TTY environments — the user isn't there to answer. */
+async function promptYesNo(
+  question: string,
+  defaultYes: boolean,
+  autoYes: boolean
+): Promise<boolean> {
+  if (autoYes) return true;
+  if (!input.isTTY) return false;
+  const rl = createInterface({ input, output });
+  try {
+    const hint = defaultYes ? "[Y/n]" : "[y/N]";
+    const ans = (await rl.question(`${question} ${hint} `)).trim().toLowerCase();
+    if (ans === "") return defaultYes;
+    return ans === "y" || ans === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 /** Core reap logic, decoupled from the CAC plumbing so tests can drive it
@@ -208,7 +229,21 @@ async function loadSingle(
   return row ? [row] : [];
 }
 
-export function registerReap(cli: CAC): void {
+/** Dependency-injection shape: host CLI (contrail) loads its own config and
+ *  passes the result, so contrail-community doesn't depend on contrail's
+ *  cli-config infrastructure. */
+export interface ReapHostDeps {
+  /** Returns a contrail config; host is expected to exit(1) on its own if
+   *  no config is found. The shape is opaque to reap. */
+  resolveAndLoadConfig: (opts: { config?: string; root?: string }) => Promise<{
+    community?: {
+      plcDirectory?: string;
+      masterKey: Uint8Array;
+    };
+  }>;
+}
+
+export function registerReap(cli: CAC, host: ReapHostDeps): void {
   cli
     .command(
       "reap",
@@ -246,7 +281,7 @@ export function registerReap(cli: CAC): void {
         process.exit(1);
       }
 
-      const config = await resolveAndLoadConfig(options);
+      const config = await host.resolveAndLoadConfig(options);
       const community = config.community;
       if (!community) {
         console.error(
@@ -274,14 +309,6 @@ export function registerReap(cli: CAC): void {
           process.exit(1);
         }
 
-        // Lazy-import to avoid pulling adapter into the CLI startup path
-        // for unrelated subcommands.
-        const { CommunityAdapter } = await import(
-          "../../core/community/adapter.js"
-        );
-        const { CredentialCipher } = await import(
-          "../../core/community/credentials.js"
-        );
         const adapter = new CommunityAdapter(db);
         const cipher = new CredentialCipher(community.masterKey);
 

@@ -6,7 +6,7 @@ import {
   buildUpdateOp,
   signUpdateOp,
   cidForOp,
-} from "../src/core/community/plc";
+} from "../src/plc";
 
 describe("cidForOp", () => {
   it("produces a CIDv1 dag-cbor sha256 base32-lower CID starting with bafyrei", async () => {
