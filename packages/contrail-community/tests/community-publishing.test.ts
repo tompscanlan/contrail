@@ -78,7 +78,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     }
     return new Response(JSON.stringify({ error: "AuthFailed" }), { status: 401 });
   }
-  if (url.endsWith("/xrpc/com.atproto.repo.createRecord")) {
+  if (url.endsWith("/xrpc/com.atproto.repo.putRecord")) {
     return new Response(
       JSON.stringify({
         uri: `at://${body.repo}/${body.collection}/fakerkey`,
@@ -220,7 +220,7 @@ describe("community publishing + reauth — stage 3", () => {
 
     const newCalls = pdsCalls.slice(before);
     expect(newCalls.some((c) => c.url.endsWith("/xrpc/com.atproto.server.createSession"))).toBe(true);
-    expect(newCalls.some((c) => c.url.endsWith("/xrpc/com.atproto.repo.createRecord"))).toBe(true);
+    expect(newCalls.some((c) => c.url.endsWith("/xrpc/com.atproto.repo.putRecord"))).toBe(true);
   });
 
   it("non-$publishers member cannot putRecord", async () => {
@@ -381,7 +381,7 @@ async function makeScenarioApp(scenario: {
       if (scenario.onRefreshSession) return scenario.onRefreshSession();
       return new Response(JSON.stringify({ error: "ExpiredToken" }), { status: 400 });
     }
-    if (url.endsWith("/xrpc/com.atproto.repo.createRecord")) {
+    if (url.endsWith("/xrpc/com.atproto.repo.putRecord")) {
       return new Response(
         JSON.stringify({
           uri: `at://${body.repo}/${body.collection}/scenkey`,
@@ -465,11 +465,11 @@ describe("community publishing — session caching (Task 14)", () => {
     const createSessionCalls = calls.filter((c) =>
       c.url.endsWith("/xrpc/com.atproto.server.createSession")
     ).length;
-    const createRecordCalls = calls.filter((c) =>
-      c.url.endsWith("/xrpc/com.atproto.repo.createRecord")
+    const putRecordCalls = calls.filter((c) =>
+      c.url.endsWith("/xrpc/com.atproto.repo.putRecord")
     ).length;
     expect(createSessionCalls).toBe(1);
-    expect(createRecordCalls).toBe(3);
+    expect(putRecordCalls).toBe(3);
   });
 
   it("considers a session valid when accessExp is in the future", async () => {
@@ -494,10 +494,10 @@ describe("community publishing — session caching (Task 14)", () => {
       c.url.endsWith("/xrpc/com.atproto.server.createSession")
     ).length;
     expect(createSessionCalls).toBe(0);
-    // The createRecord call must have used the cached accessJwt.
-    const cr = calls.find((c) => c.url.endsWith("/xrpc/com.atproto.repo.createRecord"));
-    expect(cr).toBeDefined();
-    expect(cr!.authorization).toBe(`Bearer ${cachedAccess}`);
+    // The putRecord call must have used the cached accessJwt.
+    const pr = calls.find((c) => c.url.endsWith("/xrpc/com.atproto.repo.putRecord"));
+    expect(pr).toBeDefined();
+    expect(pr!.authorization).toBe(`Bearer ${cachedAccess}`);
   });
 
   it("refreshes a near-expired session via refreshSession", async () => {
@@ -531,9 +531,9 @@ describe("community publishing — session caching (Task 14)", () => {
     ).length;
     expect(createSessionCalls).toBe(0);
     expect(refreshSessionCalls).toBe(1);
-    // createRecord must use the refreshed access JWT.
-    const cr = calls.find((c) => c.url.endsWith("/xrpc/com.atproto.repo.createRecord"));
-    expect(cr!.authorization).toBe(`Bearer ${refreshedAccess}`);
+    // putRecord must use the refreshed access JWT.
+    const pr = calls.find((c) => c.url.endsWith("/xrpc/com.atproto.repo.putRecord"));
+    expect(pr!.authorization).toBe(`Bearer ${refreshedAccess}`);
   });
 
   it("falls back to createSession when refresh fails", async () => {
@@ -597,7 +597,7 @@ describe("community publishing — provision mode", () => {
     expect(
       newCalls.some(
         (c) =>
-          c.url.endsWith("/xrpc/com.atproto.repo.createRecord") &&
+          c.url.endsWith("/xrpc/com.atproto.repo.putRecord") &&
           c.body.repo === PROVISION_COMMUNITY_DID
       )
     ).toBe(true);

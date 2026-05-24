@@ -49,7 +49,7 @@ async function build(): Promise<{ app: Hono; adapter: CommunityAdapter }> {
         : input instanceof URL
           ? input.href
           : input.url;
-    if (url.endsWith("/xrpc/com.atproto.repo.createRecord")) {
+    if (url.endsWith("/xrpc/com.atproto.repo.putRecord")) {
       return new Response(JSON.stringify({ error: "AuthRequired" }), {
         status: 401,
       });
@@ -122,8 +122,8 @@ describe("publish path: 401 clears the session cache (L6)", () => {
     ({ app, adapter } = await build());
   });
 
-  it("removes the cached session row when createRecord returns 401", async () => {
-    // Seed a cached session that will be used (and rejected) by createRecord.
+  it("removes the cached session row when putRecord returns 401", async () => {
+    // Seed a cached session that will be used (and rejected) by putRecord.
     await adapter.upsertSession(COMMUNITY_DID, {
       accessJwt: "stale-access",
       refreshJwt: "stale-refresh",

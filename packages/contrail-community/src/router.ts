@@ -912,10 +912,10 @@ export function registerCommunityRoutes(
       );
     }
 
-    // Proxy createRecord.
+    // Proxy putRecord (upsert).
     const f = cfg.fetch ?? fetch;
     const res = await f(
-      `${raw.pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.repo.createRecord`,
+      `${raw.pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.repo.putRecord`,
       {
         method: "POST",
         headers: {
