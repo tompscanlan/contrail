@@ -94,6 +94,7 @@ export interface ProvisionInput {
    *  createAppPassword) for ongoing publishing — the user's account password
    *  is never persisted. */
   rotationKey: string;
+  spaceHostEndpoint?: string;
 }
 
 export interface ProvisionResult {
@@ -177,6 +178,12 @@ export class ProvisionOrchestrator {
           type: "AtprotoPersonalDataServer",
           endpoint: input.pdsEndpoint,
         },
+        ...(input.spaceHostEndpoint ? {
+          space_host: {
+            type: "AtprotoSpaceHost",
+            endpoint: input.spaceHostEndpoint,
+          },
+        } : {}),
       },
     });
     // Genesis is signed with Contrail's subordinate rotation key — it's listed
