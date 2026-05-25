@@ -258,12 +258,21 @@ export class ProvisionOrchestrator {
         ...baseRotationKeys,
         ...recommended.rotationKeys.filter((k) => !baseRotationKeys.includes(k)),
       ];
+      const mergedServices = {
+        ...recommended.services,
+        ...(input.spaceHostEndpoint ? {
+          space_host: {
+            type: "AtprotoSpaceHost",
+            endpoint: input.spaceHostEndpoint,
+          },
+        } : {}),
+      };
       const unsignedUpdate = buildUpdateOp({
         prev: await cidForOp(signedGenesis),
         rotationKeys: updatedRotationKeys,
         verificationMethodAtproto: recommended.verificationMethods.atproto,
         alsoKnownAs: recommended.alsoKnownAs,
-        services: recommended.services,
+        services: mergedServices,
       });
       const signedUpdate = await signUpdateOp(
         unsignedUpdate,

@@ -354,6 +354,7 @@ export function registerCommunityRoutes(
         password: body.password,
         inviteCode: body.inviteCode,
         rotationKey: body.rotationKey,
+        spaceHostEndpoint: cfg.spaceHostEndpoint,
       });
     } catch (err: any) {
       // attemptId must always come back to the caller so they can retry

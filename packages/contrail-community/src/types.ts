@@ -92,6 +92,11 @@ export interface CommunityConfig {
    *  `mint` and `adopt` are not gated by this flag; they don't burn external
    *  resources. */
   allowProvisioning?: boolean;
+  /** Endpoint advertised as the `#space_host` service in the PLC genesis op
+   *  for newly provisioned communities. When set, the DID doc will include a
+   *  `space_host` entry pointing at this URL, enabling DID-based authority
+   *  dispatch from external clients (e.g., atmo-events). */
+  spaceHostEndpoint?: string;
 }
 
 /** Public view of a community row. Encrypted credentials are not included here
