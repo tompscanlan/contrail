@@ -948,6 +948,91 @@ export function registerCommunityRoutes(
     return c.json({ uri: out.uri, cid: out.cid });
   });
 
+  // Upload a blob into the community repo (the custodian counterpart to
+  // putRecord). Same $publishers ACL + community session; the request body is
+  // the raw blob bytes (not JSON), so communityDid rides in the query. The
+  // returned BlobRef is valid in the COMMUNITY repo, so the caller can embed it
+  // in a record that putRecord then writes to that same repo.
+  app.post(`/xrpc/${NS}.uploadBlob`, auth, async (c) => {
+    const sa = getAuth(c);
+    const communityDid = c.req.query("communityDid");
+    if (!communityDid) {
+      return c.json({ error: "InvalidRequest", message: "communityDid required" }, 400);
+    }
+
+    const row = await community.getCommunity(communityDid);
+    if (!row) return c.json({ error: "NotFound" }, 404);
+    if (row.mode === "mint") {
+      return c.json(
+        { error: "NotSupported", reason: "publishing-not-supported-for-minted-communities" },
+        400
+      );
+    }
+
+    // Caller must be member+ in $publishers.
+    const publishersUri = buildSpaceUri({
+      ownerDid: communityDid,
+      type: spaceType,
+      key: "$publishers",
+    });
+    const level = await resolveEffectiveLevel(community, publishersUri, sa.issuer);
+    if (!level) {
+      return c.json({ error: "Forbidden", reason: "not-in-publishers" }, 403);
+    }
+
+    // Decrypt the stored app password and create/reuse a session.
+    const raw = await community.getRawCredentials(communityDid);
+    if (!raw?.appPasswordEncrypted || !raw.pdsEndpoint || !raw.identifier) {
+      return c.json({ error: "InvalidState", reason: "missing-credentials" }, 500);
+    }
+    let session;
+    try {
+      const appPassword = await cipher.decryptString(raw.appPasswordEncrypted);
+      session = await ensureSession({
+        community,
+        did: communityDid,
+        pdsEndpoint: raw.pdsEndpoint,
+        identifier: raw.identifier,
+        password: appPassword,
+        fetch: cfg.fetch,
+      });
+    } catch (err: any) {
+      return c.json(
+        { error: "UpstreamFailure", reason: "session-creation-failed", message: err.message },
+        502
+      );
+    }
+
+    // Proxy the raw bytes to the community PDS, forwarding the content-type.
+    const bytes = await c.req.arrayBuffer();
+    const contentType = c.req.header("content-type") ?? "application/octet-stream";
+    const f = cfg.fetch ?? fetch;
+    const res = await f(
+      `${raw.pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.repo.uploadBlob`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": contentType,
+          authorization: `Bearer ${session.accessJwt}`,
+        },
+        body: bytes,
+      }
+    );
+    if (res.status === 401) {
+      // Stale or revoked session: drop the cache so the next request goes cold.
+      await community.clearSession(communityDid);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return c.json(
+        { error: "UpstreamFailure", message: `uploadBlob failed (${res.status}): ${text}` },
+        502
+      );
+    }
+    const out = (await res.json()) as { blob?: unknown };
+    return c.json({ blob: out.blob });
+  });
+
   app.post(`/xrpc/${NS}.deleteRecord`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
