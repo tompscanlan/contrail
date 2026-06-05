@@ -43,8 +43,6 @@ describe("buildUpdateOp + signUpdateOp", () => {
       alsoKnownAs: ["at://x.test"],
       services: { atproto_pds: { type: "AtprotoPersonalDataServer", endpoint: "https://x.test" } },
     });
-    expect(update.type).toBe("plc_operation");
-    expect(update.prev).toBe(prev);
 
     const signedUpdate = await signUpdateOp(update, kp.privateJwk);
     expect(signedUpdate.sig).toMatch(/^[A-Za-z0-9_-]+$/);

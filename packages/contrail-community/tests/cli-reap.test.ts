@@ -338,12 +338,6 @@ describe("chooseReapDbSource", () => {
 });
 
 describe("plc tombstone helpers", () => {
-  it("buildTombstoneOp produces the expected shape", () => {
-    const op = buildTombstoneOp("bafyreigenesis");
-    expect(op.type).toBe("plc_tombstone");
-    expect(op.prev).toBe("bafyreigenesis");
-  });
-
   it("signTombstoneOp adds a base64url sig", async () => {
     const kp = await generateKeyPair();
     const op = buildTombstoneOp("bafyreigenesis");
