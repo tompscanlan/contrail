@@ -324,6 +324,14 @@ export function registerCommunityRoutes(
       // caller-supplied PDS" — that's the exact attack the allowlist prevents.
       // Refuse unless the operator has explicitly opted into the dangerous
       // accept-any mode via allowAnyProvisionPdsEndpoint.
+      //
+      // SSRF note: allowAnyProvisionPdsEndpoint also bypasses any endpoint
+      // guard — the caller-supplied pdsEndpoint flows straight to
+      // describeServer + the createAccount fetches below with no private-IP /
+      // link-local / cloud-metadata protection. Only enable it behind trusted
+      // auth, and pair it with an egress network policy (block 169.254.0.0/16)
+      // + IMDSv2 on the host. The allowlist path above contains this by
+      // construction.
       return c.json(
         {
           error: "ProvisioningMisconfigured",
