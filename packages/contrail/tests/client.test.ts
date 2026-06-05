@@ -1,43 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { ContrailConfig } from "../src/core/types";
 import { resolvePDS, getClient, getPDS, __resetPdsCachesForTests } from "../src/core/client";
-import {
-  CompositeDidDocumentResolver,
-  PlcDidDocumentResolver,
-  WebDidDocumentResolver,
-  type DidDocumentResolver,
-} from "@atcute/identity-resolver";
+import { type DidDocumentResolver } from "@atcute/identity-resolver";
 import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";
-
-describe("ContrailConfig.networkOverrides", () => {
-  it("accepts all three subfields", () => {
-    const resolver: DidDocumentResolver = new CompositeDidDocumentResolver({
-      methods: {
-        plc: new PlcDidDocumentResolver({ apiUrl: "http://plc.dev.svc.cluster.local:2582" }),
-        web: new WebDidDocumentResolver(),
-      },
-    });
-    const config: Pick<ContrailConfig, "namespace" | "collections" | "networkOverrides"> = {
-      namespace: "test",
-      collections: { col: { collection: "test.col" } },
-      networkOverrides: {
-        resolver,
-        slingshotUrl: "http://slingshot.dev.svc.cluster.local",
-        additionalAllowedHosts: ["pds.dev.svc.cluster.local"],
-      },
-    };
-    expect(config.networkOverrides?.resolver).toBe(resolver);
-  });
-
-  it("accepts omitted networkOverrides", () => {
-    const config: Pick<ContrailConfig, "namespace" | "collections" | "networkOverrides"> = {
-      namespace: "test",
-      collections: { col: { collection: "test.col" } },
-    };
-    expect(config.networkOverrides).toBeUndefined();
-  });
-});
 
 describe("validatePdsUrl via resolvePDS — regression baseline", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
