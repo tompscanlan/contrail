@@ -186,7 +186,7 @@ export async function backfillUser(
   if (!client) {
     try {
       client = await withRetry(
-        () => getClient(did as Did, db),
+        () => getClient(did as Did, db, config),
         `getClient(${did})`,
         Math.min(retries, 1),
         timeout
@@ -356,7 +356,7 @@ export async function backfillPending(
       for (let i = 0; i < dids.length; i += 200) {
         await Promise.allSettled(
           dids.slice(i, i + 200).map((did) =>
-            getPDS(did as Did, db).catch(() => {})
+            getPDS(did as Did, db, config).catch(() => {})
           )
         );
       }
@@ -386,7 +386,7 @@ export async function backfillPending(
           let client: Client | undefined;
           try {
             client = await withRetry(
-              () => getClient(did as Did, db),
+              () => getClient(did as Did, db, config),
               `getClient(${did})`,
               0,
               FAST_TIMEOUT
@@ -436,7 +436,7 @@ export async function backfillPending(
             let client: Client | undefined;
             try {
               client = await withRetry(
-                () => getClient(did as Did, db),
+                () => getClient(did as Did, db, config),
                 `getClient(${did})`,
                 2
               );

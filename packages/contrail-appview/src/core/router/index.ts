@@ -88,7 +88,7 @@ export function createApp(
     const actor = c.req.query("actor");
     if (!actor) return c.json({ error: "actor parameter required" }, 400);
 
-    const did = await resolveActor(db, actor);
+    const did = await resolveActor(db, actor, config);
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
 
     // Ensure profile records are backfilled
@@ -138,7 +138,7 @@ export function createApp(
       : config.spaces?.authority
         ? {
             adapter: options.spaces?.adapter ?? new HostedAdapter(spacesDb, config),
-            verifier: buildVerifier(config.spaces.authority),
+            verifier: buildVerifier(config.spaces.authority, config.networkOverrides),
             manifestVerifier: config.spaces.authority.signing
               ? createManifestVerifier({
                   resolveKey: async (iss) =>

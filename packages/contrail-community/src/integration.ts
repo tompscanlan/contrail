@@ -60,7 +60,7 @@ export function createCommunityIntegration(
     registerRoutes(app, opts) {
       // Reuse the spaces JWT verifier — the auth model is identical.
       if (!config.spaces?.authority) return;
-      const verifier = buildVerifier(config.spaces.authority);
+      const verifier = buildVerifier(config.spaces.authority, config.networkOverrides);
       const authMiddleware =
         opts?.authMiddleware ?? createServiceAuthMiddleware(verifier);
       registerCommunityRoutes(
