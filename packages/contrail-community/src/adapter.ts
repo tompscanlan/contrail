@@ -500,24 +500,36 @@ export class CommunityAdapter {
       .run();
   }
 
-  /** List every provision attempt that did NOT reach `activated`. These are
-   *  the rows reap can act on: any non-terminal status means the flow stopped
+  /** List provision attempts that did NOT reach `activated` AND have been
+   *  idle for at least `olderThanMs` (no update within that window). These are
+   *  the rows reap can act on: a non-terminal status means the flow stopped
    *  partway, leaving (typically) a dangling DID in PLC that needs
-   *  tombstoning. */
-  async listStuckAttempts(): Promise<ProvisionAttemptRow[]> {
+   *  tombstoning. The age floor is mandatory and exists so a bulk reap can
+   *  never select an in-flight attempt that is mid-state-machine (seconds old)
+   *  and tombstone a DID that was about to activate. Pass `0` to disable the
+   *  floor (e.g. a test, or an operator who has confirmed nothing is running). */
+  async listStuckAttempts(olderThanMs: number): Promise<ProvisionAttemptRow[]> {
+    const cutoff = Date.now() - olderThanMs;
     const rows = await this.db
       .prepare(
-        `SELECT * FROM provision_attempts WHERE status != 'activated' ORDER BY updated_at ASC`
+        `SELECT * FROM provision_attempts
+         WHERE status != 'activated' AND updated_at <= ?
+         ORDER BY updated_at ASC`
       )
+      .bind(cutoff)
       .all<Record<string, any>>();
     return rows.results.map(rowToProvisionAttempt);
   }
 
   /** Move a stuck provision_attempts row into the archive table after reap
-   *  has tombstoned its DID in PLC. The copy is best-effort atomic per row:
-   *  insert into the archive first, then delete from the live table. If the
-   *  delete fails, the archive row records the attempt and the live row is
-   *  still present for retry. */
+   *  has tombstoned its DID in PLC. Insert + delete run as a single
+   *  `db.batch()`, which is atomic on Postgres (BEGIN/COMMIT) and D1; on the
+   *  plain sqlite adapter it is not, so the archive INSERT is also idempotent
+   *  (`ON CONFLICT (attempt_id) DO NOTHING`). Together that makes a
+   *  retry-after-partial-failure safe: if a prior run's INSERT landed but its
+   *  DELETE did not, the row is stranded in both tables; re-running archives
+   *  cleanly (the INSERT is a no-op, the DELETE removes the live row) instead
+   *  of dying on a PRIMARY KEY conflict. */
   async archiveStuckAttempt(
     attemptId: string,
     opts: { tombstoneOpCid?: string | null; notes?: string | null } = {}
@@ -530,13 +542,14 @@ export class CommunityAdapter {
       throw new Error(`provision_attempt not found: ${attemptId}`);
     }
     const now = Date.now();
-    await this.db
+    const insert = this.db
       .prepare(
         `INSERT INTO provision_attempts_archive (
           attempt_id, did, pds_endpoint, handle, email, invite_code,
           last_status, last_error,
           archived_at, tombstone_op_cid, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (attempt_id) DO NOTHING`
       )
       .bind(
         row.attempt_id,
@@ -550,12 +563,11 @@ export class CommunityAdapter {
         now,
         opts.tombstoneOpCid ?? null,
         opts.notes ?? null
-      )
-      .run();
-    await this.db
+      );
+    const del = this.db
       .prepare(`DELETE FROM provision_attempts WHERE attempt_id = ?`)
-      .bind(attemptId)
-      .run();
+      .bind(attemptId);
+    await this.db.batch([insert, del]);
   }
 
   // ---- Community sessions cache -----------------------------------------

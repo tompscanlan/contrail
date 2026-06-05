@@ -297,7 +297,7 @@ export function registerCommunityRoutes(
       );
     }
 
-    const allowed = cfg.allowedPdsEndpoints;
+    const allowed = cfg.allowedProvisionPdsEndpoints;
     if (allowed && allowed.length > 0) {
       const allowedNormalized = allowed.map((e) => {
         try {
@@ -318,6 +318,21 @@ export function registerCommunityRoutes(
           400
         );
       }
+    } else if (!cfg.allowAnyProvisionPdsEndpoint) {
+      // Fail closed: provisioning is enabled but no allowlist is configured.
+      // An empty/undefined allowlist must NOT mean "sign a genesis op for any
+      // caller-supplied PDS" — that's the exact attack the allowlist prevents.
+      // Refuse unless the operator has explicitly opted into the dangerous
+      // accept-any mode via allowAnyProvisionPdsEndpoint.
+      return c.json(
+        {
+          error: "ProvisioningMisconfigured",
+          message:
+            "community.provision requires a non-empty allowedProvisionPdsEndpoints allowlist; " +
+            "set the allowlist, or set allowAnyProvisionPdsEndpoint:true to deliberately accept any PDS",
+        },
+        403
+      );
     }
     body.pdsEndpoint = normalizedPdsEndpoint;
 

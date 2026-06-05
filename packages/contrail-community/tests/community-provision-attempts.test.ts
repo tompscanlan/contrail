@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import type { Database } from "@atmo-dev/contrail-base";
 import { initCommunitySchema } from "../src/schema";
 import { CommunityAdapter } from "../src/adapter";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 
 describe("provision_attempts adapter", () => {
+  let db: Database;
   let adapter: CommunityAdapter;
 
   beforeEach(async () => {
-    const db = createSqliteDatabase(":memory:");
+    db = createSqliteDatabase(":memory:");
     await initCommunitySchema(db);
     adapter = new CommunityAdapter(db);
   });
@@ -125,6 +127,99 @@ describe("provision_attempts adapter", () => {
     const row = await adapter.getProvisionAttempt("a-pwd");
     expect(row?.encryptedPassword).toBe("pwd-enc");
     expect(row?.accountCreatedAt).toBeTruthy();
+  });
+
+  describe("listStuckAttempts age threshold", () => {
+    async function seedStuck(attemptId: string, did: string): Promise<void> {
+      await adapter.createProvisionAttempt({
+        attemptId,
+        did,
+        pdsEndpoint: "https://pds.test",
+        handle: `${attemptId}.pds.test`,
+        email: `${attemptId}@x.test`,
+        encryptedSigningKey: "sk",
+        encryptedRotationKey: "rk",
+      });
+    }
+    /** Backdate a row's updated_at so it looks old to the age filter. */
+    async function ageRow(attemptId: string, ageMs: number): Promise<void> {
+      await db
+        .prepare(`UPDATE provision_attempts SET updated_at = ? WHERE attempt_id = ?`)
+        .bind(Date.now() - ageMs, attemptId)
+        .run();
+    }
+
+    it("excludes a freshly-updated (in-flight) non-activated row", async () => {
+      await seedStuck("fresh", "did:plc:fresh");
+      // updated_at is ~now; a 30-minute floor must not select it.
+      const rows = await adapter.listStuckAttempts(30 * 60 * 1000);
+      expect(rows.map((r) => r.attemptId)).not.toContain("fresh");
+    });
+
+    it("includes a row older than the threshold", async () => {
+      await seedStuck("old", "did:plc:old");
+      await ageRow("old", 2 * 60 * 60 * 1000); // 2 hours ago
+      const rows = await adapter.listStuckAttempts(30 * 60 * 1000);
+      expect(rows.map((r) => r.attemptId)).toContain("old");
+    });
+
+    it("with a zero threshold returns every non-activated row", async () => {
+      await seedStuck("a", "did:plc:a");
+      await seedStuck("b", "did:plc:b");
+      const rows = await adapter.listStuckAttempts(0);
+      expect(rows.map((r) => r.attemptId).sort()).toEqual(["a", "b"]);
+    });
+  });
+
+  describe("archiveStuckAttempt idempotency", () => {
+    it("retry after a partial failure (archive row already present, live row stranded) does not throw and finishes the move", async () => {
+      await adapter.createProvisionAttempt({
+        attemptId: "partial",
+        did: "did:plc:partial",
+        pdsEndpoint: "https://pds.test",
+        handle: "partial.pds.test",
+        email: "partial@x.test",
+        encryptedSigningKey: "sk",
+        encryptedRotationKey: "rk",
+      });
+      // Simulate the first reap: its archive INSERT landed, but the live-row
+      // DELETE failed, leaving the row in BOTH tables.
+      await db
+        .prepare(
+          `INSERT INTO provision_attempts_archive
+            (attempt_id, did, pds_endpoint, handle, email, invite_code,
+             last_status, last_error, archived_at, tombstone_op_cid, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          "partial",
+          "did:plc:partial",
+          "https://pds.test",
+          "partial.pds.test",
+          "partial@x.test",
+          null,
+          "genesis_submitted",
+          null,
+          Date.now(),
+          "cid-first",
+          null
+        )
+        .run();
+
+      // The retry must not hit a PRIMARY KEY conflict on the archive INSERT.
+      await expect(
+        adapter.archiveStuckAttempt("partial", { tombstoneOpCid: "cid-retry" })
+      ).resolves.toBeUndefined();
+
+      // Live row is now gone; the archive row remains (the original landed copy).
+      expect(await adapter.getProvisionAttempt("partial")).toBeNull();
+      const archive = await db
+        .prepare("SELECT * FROM provision_attempts_archive WHERE attempt_id = ?")
+        .bind("partial")
+        .first<Record<string, any>>();
+      expect(archive).not.toBeNull();
+      expect(archive!.tombstone_op_cid).toBe("cid-first");
+    });
   });
 
   it("enforces did uniqueness across attempts", async () => {

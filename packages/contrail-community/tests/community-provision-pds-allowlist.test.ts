@@ -73,7 +73,10 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   return new Response(`unmocked: ${method} ${url}`, { status: 404 });
 }
 
-function buildConfig(allowedPdsEndpoints: string[] | undefined): ContrailConfig {
+function buildConfig(
+  allowedProvisionPdsEndpoints: string[] | undefined,
+  extra: { allowAnyProvisionPdsEndpoint?: boolean } = {}
+): ContrailConfig {
   return {
     namespace: "test.comm",
     collections: { message: { collection: "app.event.message" } },
@@ -88,8 +91,9 @@ function buildConfig(allowedPdsEndpoints: string[] | undefined): ContrailConfig 
       masterKey: MASTER_KEY,
       plcDirectory: PLC_DIRECTORY,
       fetch: mockFetch,
-      allowedPdsEndpoints,
+      allowedProvisionPdsEndpoints,
       allowProvisioning: true,
+      allowAnyProvisionPdsEndpoint: extra.allowAnyProvisionPdsEndpoint,
     },
   };
 }
@@ -103,9 +107,12 @@ function fakeAuth(): MiddlewareHandler {
   };
 }
 
-async function makeApp(allowedPdsEndpoints: string[] | undefined): Promise<Hono> {
+async function makeApp(
+  allowedProvisionPdsEndpoints: string[] | undefined,
+  extra: { allowAnyProvisionPdsEndpoint?: boolean } = {}
+): Promise<Hono> {
   const db = createSqliteDatabase(":memory:");
-  const cfg = buildConfig(allowedPdsEndpoints);
+  const cfg = buildConfig(allowedProvisionPdsEndpoints, extra);
   const resolved = resolveConfig(cfg);
   const community = createCommunityIntegration({ db, config: resolved });
   await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
@@ -123,7 +130,7 @@ async function call(app: Hono, body: any): Promise<Response> {
 }
 
 describe("provision pdsEndpoint allowlist (M3)", () => {
-  it("rejects pdsEndpoint not in allowedPdsEndpoints", async () => {
+  it("rejects pdsEndpoint not in allowedProvisionPdsEndpoints", async () => {
     const app = await makeApp([ALLOWED_PDS]);
     const res = await call(app, {
       handle: "newcomm.attacker.pds.test",
@@ -138,7 +145,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
     expect(j.message).toMatch(/pdsEndpoint/i);
   });
 
-  it("accepts pdsEndpoint that is in allowedPdsEndpoints", async () => {
+  it("accepts pdsEndpoint that is in allowedProvisionPdsEndpoints", async () => {
     const app = await makeApp([ALLOWED_PDS]);
     const res = await call(app, {
       handle: "newcomm.allowed.pds.test",
@@ -151,7 +158,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
     expect(res.status).toBe(200);
   });
 
-  it("when allowedPdsEndpoints is undefined, accepts any pdsEndpoint (back-compat)", async () => {
+  it("fails closed: provisioning enabled + undefined allowlist → rejected", async () => {
     const app = await makeApp(undefined);
     const res = await call(app, {
       handle: "newcomm.allowed.pds.test",
@@ -161,11 +168,31 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       pdsEndpoint: ALLOWED_PDS,
       rotationKey: "did:key:zStubCallerRotationKey",
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    const j = (await res.json()) as { error: string; message: string };
+    expect(j.error).toBe("ProvisioningMisconfigured");
+    expect(j.message).toMatch(
+      /allowlist|allowedProvisionPdsEndpoints|allowAnyProvisionPdsEndpoint/i
+    );
   });
 
-  it("when allowedPdsEndpoints is empty array, accepts any pdsEndpoint (back-compat)", async () => {
+  it("fails closed: provisioning enabled + empty allowlist → rejected", async () => {
     const app = await makeApp([]);
+    const res = await call(app, {
+      handle: "newcomm.allowed.pds.test",
+      email: "x@x.test",
+      password: "secret",
+      inviteCode: "code-x",
+      pdsEndpoint: ALLOWED_PDS,
+      rotationKey: "did:key:zStubCallerRotationKey",
+    });
+    expect(res.status).toBe(403);
+    const j = (await res.json()) as { error: string; message: string };
+    expect(j.error).toBe("ProvisioningMisconfigured");
+  });
+
+  it("allowAnyProvisionPdsEndpoint=true is a loud opt-in: empty allowlist accepts any pdsEndpoint", async () => {
+    const app = await makeApp([], { allowAnyProvisionPdsEndpoint: true });
     const res = await call(app, {
       handle: "newcomm.allowed.pds.test",
       email: "x@x.test",

@@ -100,7 +100,11 @@ The integration plugs in to two contrail extension points:
 - `<ns>.community.space.create | grant | revoke | ...` — community-owned spaces
 - `<ns>.community.putRecord | deleteRecord` — publish records as the community DID
 
-The `contrail reap` CLI subcommand tombstones provisioned DIDs in PLC when provisioning fails partway and orphan rows accumulate.
+The `contrail-community reap` CLI tombstones provisioned DIDs in PLC when provisioning fails partway and orphan rows accumulate. It ships as a bin in the `@atmo-dev/contrail-community` package (`npx contrail-community reap`); under pnpm's isolated `node_modules` the core `contrail` CLI cannot resolve the community package, so `contrail reap` only works in hoisted installs where both packages sit together.
+
+- Default is dry-run; pass `--no-dry-run` to actually submit (irrevocable) tombstones.
+- `--all-stuck` only reaps rows idle at least `--older-than <minutes>` (default 30), so a bulk run can't tombstone an in-flight provision that is mid-state-machine. `--attempt-id <uuid>` targets a single known row and ignores the age floor.
+- **D1 and Postgres:** by default reap acquires the Cloudflare D1 binding via `wrangler getPlatformProxy()`. For the decoupled external (Postgres) index, pass `--db <connection-string>` or set `DATABASE_URL` and reap runs against Postgres instead (`--db` wins over the env var). The orchestrator and adapter SQL are dialect-agnostic, so both paths share the same reap logic.
 
 ## What's not here
 

@@ -12,7 +12,7 @@ import {
   cidForOp,
   type SignedGenesisOp,
 } from "../src/plc";
-import { runReap } from "../src/cli/reap";
+import { runReap, chooseReapDbSource } from "../src/cli/reap";
 
 type SeedStatus =
   | "keys_generated"
@@ -239,6 +239,7 @@ describe("runReap (cli reap)", () => {
       yes: true,
       allStuck: true,
       dryRun: false,
+      olderThanMs: 0, // these rows are freshly seeded; disable the age floor
     });
 
     expect(result.ok).toBe(true);
@@ -251,6 +252,37 @@ describe("runReap (cli reap)", () => {
     // The activated row is untouched.
     const live = await adapter.getProvisionAttempt("live");
     expect(live?.status).toBe("activated");
+  });
+
+  it("--all-stuck skips freshly-updated in-flight rows under the default age floor", async () => {
+    // A row mid-state-machine (updated_at ~ now) must survive a default
+    // --all-stuck run so reap can't tombstone a DID about to activate.
+    await seedAttempt(adapter, cipher, {
+      attemptId: "in-flight",
+      did: "did:plc:inflight",
+      status: "genesis_submitted",
+    });
+
+    const calls: PlcCall[] = [];
+    const result = await runReap({
+      adapter,
+      cipher,
+      plcDirectory: "https://plc.test",
+      fetch: makeFakeFetch(calls),
+      logger: { log: () => {}, error: () => {} },
+      yes: true,
+      allStuck: true,
+      dryRun: false,
+      // olderThanMs OMITTED — must apply the default 30-min floor.
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.reaped).toBe(0);
+    expect(calls.length).toBe(0);
+    // The in-flight row is untouched.
+    expect((await adapter.getProvisionAttempt("in-flight"))?.status).toBe(
+      "genesis_submitted"
+    );
   });
 
   it("refuses to reap an activated row passed via --attempt-id", async () => {
@@ -276,6 +308,32 @@ describe("runReap (cli reap)", () => {
     expect(result.errors).toBeGreaterThanOrEqual(1);
     const live = await adapter.getProvisionAttempt("live");
     expect(live?.status).toBe("activated");
+  });
+});
+
+describe("chooseReapDbSource", () => {
+  it("selects Postgres when --db is given", () => {
+    expect(
+      chooseReapDbSource({ db: "postgres://x", databaseUrl: undefined })
+    ).toEqual({ kind: "postgres", url: "postgres://x" });
+  });
+
+  it("selects Postgres from DATABASE_URL when --db is absent", () => {
+    expect(
+      chooseReapDbSource({ db: undefined, databaseUrl: "postgres://env" })
+    ).toEqual({ kind: "postgres", url: "postgres://env" });
+  });
+
+  it("prefers an explicit --db over DATABASE_URL", () => {
+    expect(
+      chooseReapDbSource({ db: "postgres://flag", databaseUrl: "postgres://env" })
+    ).toEqual({ kind: "postgres", url: "postgres://flag" });
+  });
+
+  it("falls back to the D1 binding when neither is set", () => {
+    expect(chooseReapDbSource({ db: undefined, databaseUrl: undefined })).toEqual({
+      kind: "d1",
+    });
   });
 });
 

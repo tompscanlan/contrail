@@ -75,14 +75,28 @@ export interface CommunityConfig {
   resolver?: DidDocumentResolver;
   /** Optional override for the fetch implementation (useful for tests). */
   fetch?: typeof fetch;
-  /** Allowlist of PDS endpoints accepted by `community.provision`. When set
-   *  to a non-empty array, callers must supply a `pdsEndpoint` that matches
-   *  one of these entries exactly; other values are rejected before any PLC
-   *  op is signed. Undefined or empty array → no restriction (back-compat).
-   *  Operators running on a public/multi-tenant Contrail SHOULD set this so
-   *  callers can't mint PLC entries pointing at attacker-controlled PDSes
-   *  signed by Contrail's rotation key. */
-  allowedPdsEndpoints?: string[];
+  /** Allowlist of PDS endpoints `community.provision` may create a community
+   *  account on. Callers must supply a `pdsEndpoint` that matches one of these
+   *  entries (after normalization); other values are rejected before any PLC
+   *  op is signed. This gates ONLY provisioning — Contrail still reads/indexes
+   *  records from every PDS on the network; this is not a global PDS filter.
+   *
+   *  Fail-closed: when `allowProvisioning` is true this list MUST be non-empty,
+   *  otherwise `community.provision` is refused. An empty/undefined allowlist
+   *  no longer means "any PDS" — to genuinely accept any caller-supplied
+   *  endpoint, set `allowAnyProvisionPdsEndpoint: true` (a separate, loud
+   *  opt-in). Operators running a public/multi-tenant Contrail MUST keep a
+   *  real allowlist here so callers can't mint PLC entries pointing at
+   *  attacker-controlled PDSes signed by Contrail's rotation key. */
+  allowedProvisionPdsEndpoints?: string[];
+  /** Explicit, loud opt-in to accept ANY caller-supplied `pdsEndpoint` when
+   *  provisioning is enabled. Only honored when `allowProvisioning` is true.
+   *  This is the dangerous mode the allowlist exists to prevent: every
+   *  successful call signs a permanent PLC genesis op pointing at a
+   *  caller-controlled endpoint with Contrail's rotation key. Leave unset
+   *  (or false) on any public/multi-tenant deployment and use
+   *  `allowedProvisionPdsEndpoints` instead. */
+  allowAnyProvisionPdsEndpoint?: boolean;
   /** Top-level switch for the `community.provision` route. Default-deny: a
    *  call with the route present but this flag unset (or false) returns 403
    *  ProvisioningDisabled BEFORE any PLC/PDS work runs. Set to `true` only

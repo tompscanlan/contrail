@@ -3,16 +3,11 @@
  *  iss === did, aud === pds-did, lxm === lexicon-method, exp not in past.
  *  Signature is verified against the iss DID's atproto verificationMethod. */
 
-import { signBytes } from "./plc";
+import { signBytes, bytesToB64url } from "./plc";
 
-function b64url(bytes: Uint8Array | string): string {
-  const b =
-    typeof bytes === "string"
-      ? new TextEncoder().encode(bytes)
-      : bytes;
-  let bin = "";
-  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]!);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function b64url(input: Uint8Array | string): string {
+  const b = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  return bytesToB64url(b);
 }
 
 function b64urlJson(obj: unknown): string {

@@ -116,6 +116,8 @@ const CONFIG: ContrailConfig = {
     plcDirectory: PLC_DIRECTORY,
     fetch: mockFetch,
     allowProvisioning: true,
+    // Fail-closed requires a non-empty allowlist when provisioning is enabled.
+    allowedProvisionPdsEndpoints: [PDS_ENDPOINT],
   },
 };
 

@@ -21,6 +21,8 @@ interface ReapOpts {
   allStuck?: boolean;
   dryRun?: boolean;
   yes?: boolean;
+  olderThan?: number;
+  db?: string;
 }
 
 /** Minimal logger interface so `runReap` can be invoked from tests with
@@ -28,6 +30,30 @@ interface ReapOpts {
 export interface ReapLogger {
   log(...args: unknown[]): void;
   error(...args: unknown[]): void;
+}
+
+/** Default idle window for `--all-stuck`: a row must have gone untouched this
+ *  long before bulk reap will consider tombstoning it. Provisioning is a
+ *  fast (seconds) state machine, so 30 minutes is a wide safety margin that
+ *  still reaps genuinely-abandoned rows. Operators can override via
+ *  `--older-than <minutes>`. */
+export const DEFAULT_REAP_AGE_FLOOR_MS = 30 * 60 * 1000;
+
+/** Where reap should read its provision_attempts rows from. Postgres (the
+ *  decoupled external index) is selected by an explicit `--db <url>` or, as a
+ *  convenience matching the apps/postgres deployment, a `DATABASE_URL` in the
+ *  environment. Otherwise reap uses the Cloudflare D1 binding via wrangler.
+ *  An explicit `--db` always wins over the env var. */
+export type ReapDbSource =
+  | { kind: "postgres"; url: string }
+  | { kind: "d1" };
+
+export function chooseReapDbSource(opts: {
+  db?: string;
+  databaseUrl?: string;
+}): ReapDbSource {
+  const url = opts.db ?? opts.databaseUrl;
+  return url ? { kind: "postgres", url } : { kind: "d1" };
 }
 
 export interface RunReapOptions {
@@ -42,6 +68,12 @@ export interface RunReapOptions {
   attemptId?: string;
   allStuck?: boolean;
   dryRun?: boolean;
+  /** Idle-age floor for `--all-stuck` (milliseconds). Rows updated more
+   *  recently than this are left alone so a bulk reap can't tombstone an
+   *  in-flight provision. Ignored for the single `--attempt-id` path, which
+   *  is an explicit operator action on a known row. Defaults to
+   *  DEFAULT_REAP_AGE_FLOOR_MS. */
+  olderThanMs?: number;
 }
 
 export interface RunReapResult {
@@ -109,9 +141,10 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
     };
   }
 
+  const olderThanMs = opts.olderThanMs ?? DEFAULT_REAP_AGE_FLOOR_MS;
   const rows = hasAttemptId
     ? await loadSingle(opts.adapter, opts.attemptId!)
-    : await opts.adapter.listStuckAttempts();
+    : await opts.adapter.listStuckAttempts(olderThanMs);
 
   if (rows.length === 0) {
     opts.logger.log("No stuck provision_attempts to reap.");
@@ -255,10 +288,19 @@ export function registerReap(cli: CAC, host: ReapHostDeps): void {
     .option("--binding <name>", "D1 binding name in wrangler.jsonc", {
       default: "DB",
     })
+    .option(
+      "--db <url>",
+      "Postgres connection string for the decoupled external index. When set (or DATABASE_URL is in the env), reap runs against Postgres instead of the D1 binding."
+    )
     .option("--attempt-id <uuid>", "Reap a single attempt by ID")
     .option(
       "--all-stuck",
-      "Reap every provision_attempts row that did not reach status=activated"
+      "Reap every provision_attempts row that did not reach status=activated and has been idle past --older-than"
+    )
+    .option(
+      "--older-than <minutes>",
+      "With --all-stuck, only reap rows idle at least this many minutes (guards in-flight provisions)",
+      { default: DEFAULT_REAP_AGE_FLOOR_MS / 60_000 }
     )
     .option(
       "--dry-run",
@@ -270,17 +312,9 @@ export function registerReap(cli: CAC, host: ReapHostDeps): void {
     )
     .option("--yes", "Auto-confirm prompts")
     .action(async (options: ReapOpts) => {
-      if (!options.attemptId && !options.allStuck) {
-        console.error("Specify --attempt-id <uuid> or --all-stuck.");
-        process.exit(1);
-      }
-      if (options.attemptId && options.allStuck) {
-        console.error(
-          "--attempt-id and --all-stuck are mutually exclusive; pass exactly one."
-        );
-        process.exit(1);
-      }
-
+      // Flag validation (exactly one of --attempt-id / --all-stuck) lives in
+      // runReap, the testable core; the `!result.ok` branch below surfaces its
+      // error and exits non-zero, so there's no second copy of it here.
       const config = await host.resolveAndLoadConfig(options);
       const community = config.community;
       if (!community) {
@@ -291,11 +325,58 @@ export function registerReap(cli: CAC, host: ReapHostDeps): void {
       }
       if (!community.plcDirectory) {
         console.error(
-          "config.community.plcDirectory is required for `contrail reap`."
+          "config.community.plcDirectory is required for `reap`."
         );
         process.exit(1);
       }
 
+      // Run reap against the acquired db, then exit non-zero on any failure.
+      const reapAndExit = async (db: Database): Promise<void> => {
+        const result = await runReap({
+          adapter: new CommunityAdapter(db),
+          cipher: new CredentialCipher(community.masterKey),
+          plcDirectory: community.plcDirectory!,
+          logger: console,
+          yes: !!options.yes,
+          attemptId: options.attemptId,
+          allStuck: options.allStuck,
+          dryRun: options.dryRun,
+          olderThanMs:
+            options.olderThan !== undefined
+              ? Number(options.olderThan) * 60_000
+              : undefined,
+        });
+        if (!result.ok) {
+          console.error(result.error);
+          process.exit(1);
+        }
+        if (result.errors > 0) {
+          process.exit(1);
+        }
+      };
+
+      const source = chooseReapDbSource({
+        db: options.db,
+        databaseUrl: process.env.DATABASE_URL,
+      });
+
+      if (source.kind === "postgres") {
+        // Decoupled external index. Build a pool, run, then close it.
+        const pg = (await import("pg")).default;
+        const { createPostgresDatabase } = await import(
+          "@atmo-dev/contrail/postgres" as string
+        );
+        console.log("reap: using Postgres index");
+        const pool = new pg.Pool({ connectionString: source.url });
+        try {
+          await reapAndExit(createPostgresDatabase(pool));
+        } finally {
+          await pool.end();
+        }
+        return;
+      }
+
+      // D1 via wrangler.
       const { getPlatformProxy } = await import("wrangler");
       const { env, dispose } = await getPlatformProxy();
       try {
@@ -308,28 +389,7 @@ export function registerReap(cli: CAC, host: ReapHostDeps): void {
           );
           process.exit(1);
         }
-
-        const adapter = new CommunityAdapter(db);
-        const cipher = new CredentialCipher(community.masterKey);
-
-        const result = await runReap({
-          adapter,
-          cipher,
-          plcDirectory: community.plcDirectory,
-          logger: console,
-          yes: !!options.yes,
-          attemptId: options.attemptId,
-          allStuck: options.allStuck,
-          dryRun: options.dryRun,
-        });
-
-        if (!result.ok) {
-          console.error(result.error);
-          process.exit(1);
-        }
-        if (result.errors > 0) {
-          process.exit(1);
-        }
+        await reapAndExit(db);
       } finally {
         await dispose();
       }
