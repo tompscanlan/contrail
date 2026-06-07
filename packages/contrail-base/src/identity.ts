@@ -15,7 +15,11 @@ export interface Identity {
 async function saveIdentity(db: Database, identity: Identity): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?) ON CONFLICT(did) DO UPDATE SET handle = excluded.handle, pds = excluded.pds, resolved_at = excluded.resolved_at"
+      // COALESCE so a null handle/pds from a partial resolution never clobbers
+      // a previously-resolved value (e.g. refreshStaleIdentities passes through
+      // a null handle when slingshot omits it). A fresh non-null value still
+      // overwrites — handle changes apply normally.
+      "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?) ON CONFLICT(did) DO UPDATE SET handle = COALESCE(excluded.handle, identities.handle), pds = COALESCE(excluded.pds, identities.pds), resolved_at = excluded.resolved_at"
     )
     .bind(identity.did, identity.handle, identity.pds, identity.resolved_at)
     .run();

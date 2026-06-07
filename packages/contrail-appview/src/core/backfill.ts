@@ -351,16 +351,18 @@ export async function backfillPending(
 
     const dids = [...byDid.keys()];
 
-    // Resolve PDS endpoints in background (populates in-memory cache)
-    const resolvePromise = (async () => {
-      for (let i = 0; i < dids.length; i += 200) {
-        await Promise.allSettled(
-          dids.slice(i, i + 200).map((did) =>
-            getPDS(did as Did, db, config).catch(() => {})
-          )
-        );
-      }
-    })();
+    // Resolve PDS endpoints up front (populates the in-memory cache) rather
+    // than concurrently with the backfill passes below. Overlapping the two put
+    // identity resolution and record backfill in contention for slingshot at
+    // once, and the partial responses that produced (a PDS without a handle)
+    // got persisted and stranded. Resolving first keeps that load separate.
+    for (let i = 0; i < dids.length; i += 200) {
+      await Promise.allSettled(
+        dids.slice(i, i + 200).map((did) =>
+          getPDS(did as Did, db, config).catch(() => {})
+        )
+      );
+    }
 
     let roundBackfilled = 0;
     let usersComplete = 0;
@@ -472,7 +474,6 @@ export async function backfillPending(
       }
     }
 
-    await resolvePromise;
     totalBackfilled += roundBackfilled;
 
     // If nothing was backfilled this round, we're stuck

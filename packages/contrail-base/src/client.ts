@@ -196,23 +196,32 @@ async function resolvePDSCached(
   db?: Database,
   config?: ContrailConfig,
 ): Promise<string | undefined> {
+  let knownPds: string | undefined;
   if (db) {
     const cached = await db
-      .prepare("SELECT pds FROM identities WHERE did = ? AND pds IS NOT NULL")
+      .prepare("SELECT pds, handle FROM identities WHERE did = ? AND pds IS NOT NULL")
       .bind(did)
-      .first<{ pds: string }>();
+      .first<{ pds: string; handle: string | null }>();
     if (cached?.pds) {
       pdsCacheSet(did, cached.pds);
-      return cached.pds;
+      // A row with both a PDS and a handle is a complete cache hit. A row with
+      // a PDS but no handle is a *partial* resolution — slingshot can return a
+      // PDS without a handle under load — so fall through to re-resolve and
+      // fill the handle instead of stranding the row forever (this DB
+      // short-circuit previously meant the handle was never backfilled). We
+      // keep serving the known PDS meanwhile, including if the re-resolve fails.
+      if (cached.handle) return cached.pds;
+      knownPds = cached.pds;
     }
   }
 
   const resolved = await resolvePDS(did, config);
-  if (!resolved?.pds) return undefined;
+  if (!resolved?.pds) return knownPds;
 
   pdsCacheSet(did, resolved.pds);
 
-  // Persist to DB for future runs
+  // Persist to DB for future runs. COALESCE keeps an existing handle when this
+  // resolution didn't return one, and never nulls a good handle.
   if (db) {
     await db
       .prepare(
