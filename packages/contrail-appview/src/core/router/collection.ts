@@ -23,6 +23,7 @@ import { checkAccess } from "../spaces/acl";
 import { hashInviteToken } from "../invite/token";
 import type { SpacesContext } from ".";
 import type { Nsid } from "@atcute/lexicons";
+import { parseResourceUri } from "@atcute/lexicons/syntax";
 import type { RealtimeEvent } from "../realtime/types";
 import { sseResponse } from "../realtime/sse";
 import { spaceTopic, communityTopic, parseSpaceTopic } from "../realtime/types";
@@ -1043,8 +1044,23 @@ export function registerCollectionRoutes(
     }
 
     app.get(`/xrpc/${ns}.${collection}.getRecord`, async (c) => {
-      const uri = c.req.query("uri");
-      if (!uri) return c.json({ error: "uri parameter required" }, 400);
+      const rawUri = c.req.query("uri");
+      if (!rawUri) return c.json({ error: "uri parameter required" }, 400);
+
+      // Parse the AT-URI (atcute validates the actor / NSID / rkey shapes) and
+      // resolve the authority to a DID up front — like the actor-param
+      // endpoints, the authority may be a handle. resolveActor is local-first
+      // (identities table, indexed) and returns a DID unchanged, so DID-URI
+      // callers are unaffected. The `rkey` guard rejects repo-only /
+      // collection-only URIs, narrowing to a full record URI.
+      const parsed = parseResourceUri(rawUri);
+      if (!parsed.ok || parsed.value.rkey === undefined) {
+        return c.json({ error: "InvalidRequest", message: "uri must be at://<actor>/<collection>/<rkey>" }, 400);
+      }
+      const did = await resolveActor(db, parsed.value.repo, config);
+      if (!did) return c.json({ error: "Could not resolve actor" }, 400);
+      const rkey = parsed.value.rkey;
+      const uri = `at://${did}/${parsed.value.collection}/${rkey}`;
 
       // Spaces path — `?spaceUri=` routes to the per-space store + ACL gate.
       const spaceUri = c.req.query("spaceUri") || undefined;
@@ -1052,14 +1068,8 @@ export function registerCollectionRoutes(
         const gated = await gateSpaceAccess(c, spaceUri, "read");
         if (gated instanceof Response) return gated;
 
-        // Parse author + rkey from the record uri `at://<did>/<collection>/<rkey>`
-        const m = uri.match(/^at:\/\/([^/]+)\/[^/]+\/([^/]+)$/);
-        if (!m) return c.json({ error: "InvalidRequest", message: "uri must be at://<did>/<collection>/<rkey>" }, 400);
-        const authorDid = m[1];
-        const rkey = m[2];
-
         const nsid = colConfig.collection;
-        const record = await spacesCtx!.adapter.getRecord(spaceUri, nsid, authorDid, rkey);
+        const record = await spacesCtx!.adapter.getRecord(spaceUri, nsid, did, rkey);
         if (!record) return c.json({ error: "NotFound" }, 404);
         return c.json({ record });
       }
