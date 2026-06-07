@@ -4,12 +4,16 @@ import { shortNameForNsid } from "../types";
 import { applyEvents, lookupExistingRecords } from "../db/records";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
+import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
 
-/** Parse an AT URI into its components. */
+/** Parse a canonical (DID-authority) record AT-URI into its components, or null
+ *  if it isn't a valid full record URI. Backed by atcute's validator, which
+ *  also enforces the DID / NSID / record-key character classes. */
 export function parseAtUri(uri: string): { did: string; collection: string; rkey: string } | null {
-  const match = uri.match(/^at:\/\/(did:[^/]+)\/([^/]+)\/([^/]+)$/);
-  if (!match) return null;
-  return { did: match[1], collection: match[2], rkey: match[3] };
+  const parsed = parseCanonicalResourceUri(uri);
+  if (!parsed.ok) return null;
+  const { repo, collection, rkey } = parsed.value;
+  return { did: repo, collection, rkey };
 }
 
 /**
