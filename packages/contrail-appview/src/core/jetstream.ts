@@ -60,6 +60,28 @@ function getLogger(config: ContrailConfig): Logger {
   return config.logger ?? console;
 }
 
+/** Sentinel returned by `nextWithDeadline` when the wait timed out. */
+const INGEST_TIMEOUT = Symbol("ingest-timeout");
+
+/** Await the iterator's next value, but give up after `ms`. Without this a
+ *  quiet Jetstream (the async iterator blocks forever waiting for an event that
+ *  never arrives) holds the cycle past its safety timeout until the caller's
+ *  hard timeout kills the isolate — so the batch and cursor are never written. */
+function nextWithDeadline<T>(
+  iterator: AsyncIterator<T>,
+  ms: number
+): Promise<IteratorResult<T> | typeof INGEST_TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout>;
+  const next = iterator.next();
+  // If the timeout wins this race the next() promise stays pending; swallow a
+  // later rejection so it can't surface as an unhandled rejection.
+  next.catch(() => {});
+  const timeout = new Promise<typeof INGEST_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(INGEST_TIMEOUT), ms);
+  });
+  return Promise.race([next, timeout]).finally(() => clearTimeout(timer));
+}
+
 export async function ingestEvents(
   config: ContrailConfig,
   cursor: number | null,
@@ -111,9 +133,13 @@ export async function ingestEvents(
     },
   });
 
-  for await (const event of subscription) {
-    if (firstYieldedTimeUs === null) firstYieldedTimeUs = event.time_us;
-    lastYieldedTimeUs = event.time_us;
+  const iterator = subscription[Symbol.asyncIterator]();
+  type Ev = typeof subscription extends AsyncIterable<infer V> ? V : never;
+
+  // Collect or skip a single event. Filtering uses early `return` rather than
+  // the loop's `continue` so the loop's exit checks still run after a filtered
+  // event (a stream of all-filtered events must not skip the deadline).
+  const handleEvent = (event: Ev): void => {
     if (event.kind === "commit") {
       const { commit } = event;
       totalCommits++;
@@ -127,7 +153,7 @@ export async function ingestEvents(
         if (!knownDids.has(event.did)) {
           filteredUnknownDid++;
           if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
-          continue;
+          return;
         }
         // Subject filter: for collections with subjectField (e.g. follows
         // pointing at a `subject` DID), drop records whose subject isn't a
@@ -139,7 +165,7 @@ export async function ingestEvents(
             subjectField
           ];
           if (typeof subj === "string" && !knownDids.has(subj)) {
-            continue;
+            return;
           }
         }
       }
@@ -152,7 +178,7 @@ export async function ingestEvents(
         } catch (err) {
           log.warn(`[ingest] recordFilter threw for ${uri}: ${err}`);
         }
-        if (!keep) continue;
+        if (!keep) return;
       }
 
       const prev = seenUris.get(uri);
@@ -195,6 +221,33 @@ export async function ingestEvents(
     } else if (event.kind === "identity") {
       identityUpdates.set(event.did, event.identity.handle);
     }
+  };
+
+  for (;;) {
+    // Run the exit checks BEFORE awaiting the next event and regardless of
+    // whether the previous event was filtered — otherwise a quiet stream blocks
+    // forever and an all-filtered flood never reaches the deadline check.
+    if (Date.now() >= deadline) {
+      log.log(
+        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
+      );
+      break;
+    }
+
+    const step = await nextWithDeadline(iterator, Math.max(0, deadline - Date.now()));
+    if (step === INGEST_TIMEOUT) {
+      log.log(
+        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
+      );
+      break;
+    }
+    if (step.done) break;
+    const event = step.value;
+
+    if (firstYieldedTimeUs === null) firstYieldedTimeUs = event.time_us;
+    lastYieldedTimeUs = event.time_us;
+
+    handleEvent(event);
 
     if (event.time_us >= startTimeUs) {
       log.log(
@@ -202,14 +255,11 @@ export async function ingestEvents(
       );
       break;
     }
-
-    if (Date.now() >= deadline) {
-      log.log(
-        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
-      );
-      break;
-    }
   }
+
+  // Close the subscription's socket, but fire-and-forget: awaiting the
+  // iterator's return on a quiet stream could itself block (the hang we fix).
+  Promise.resolve(iterator.return?.()).catch(() => {});
 
   if (filteredUnknownDid > 0) {
     const sample = [...filteredDidSamples].join(", ");
