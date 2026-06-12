@@ -47,7 +47,11 @@ export function registerRealtimeRoutes(
   if (!cfg) return;
 
   const pubsub: PubSub = options.pubsub ?? cfg.pubsub ?? new InMemoryPubSub({ queueBound: cfg.queueBound });
-  const signer = new TicketSigner(cfg.ticketSecret);
+  // Tickets gate private (space) topics only. A pubsub-only deployment (e.g.
+  // driving a derived index off published records) configures realtime without
+  // a secret — skip the signer and the ticket route; public subscribe and
+  // publishing still work.
+  const signer = cfg.ticketSecret ? new TicketSigner(cfg.ticketSecret) : null;
   const ticketTtl = cfg.ticketTtlMs ?? DEFAULT_TICKET_TTL_MS;
   const keepaliveMs = cfg.keepaliveMs ?? DEFAULT_KEEPALIVE_MS;
 
@@ -57,7 +61,8 @@ export function registerRealtimeRoutes(
   // Ticket-minting exists so browsers (which can't set Authorization on
   // EventSource) can subscribe to *private* topics. Public topics
   // (collection:, actor:) don't need tickets — subscribe with `?topic=` directly.
-  if (options.authMiddleware) {
+  // Needs a signer: skipped entirely when realtime runs without a ticketSecret.
+  if (options.authMiddleware && signer) {
     const authMw = options.authMiddleware;
     app.post(`/xrpc/${NS}.ticket`, authMw, async (c) => {
       const sa = getAuth(c);
@@ -102,6 +107,11 @@ export function registerRealtimeRoutes(
     let topics: string[];
 
     if (ticketParam) {
+      if (!signer) {
+        // Realtime configured without a ticketSecret — private-topic tickets
+        // aren't issued or accepted. Public subscribe is unaffected.
+        return c.json({ error: "AuthRequired", reason: "ticket-auth-unavailable" }, 401);
+      }
       const payload = await signer.verify(ticketParam);
       if (!payload) {
         return c.json({ error: "AuthRequired", reason: "invalid-or-expired-ticket" }, 401);

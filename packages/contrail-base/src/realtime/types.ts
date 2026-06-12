@@ -111,8 +111,14 @@ export interface RealtimeConfig {
   pubsub?: PubSub;
   /** HMAC secret used to sign subscription tickets. 32 bytes. Accepts raw
    *  Uint8Array or base64 / hex string. Envelope-encrypts nothing — tickets
-   *  are integrity-only, not confidential. */
-  ticketSecret: Uint8Array | string;
+   *  are integrity-only, not confidential.
+   *
+   *  Optional. Tickets only gate *private* (space) topics; a deployment that
+   *  uses realtime purely to fan out *public* records — e.g. driving a derived
+   *  index off `pubsub.publish` — needs no secret. When omitted, the ticket
+   *  endpoint isn't registered and presenting a `?ticket=` returns 401; public
+   *  `collection:` / `actor:` subscribe and all publishing still work. */
+  ticketSecret?: Uint8Array | string;
   /** Ticket lifetime in ms. Default 120_000 (2 minutes). */
   ticketTtlMs?: number;
   /** SSE/WS keepalive interval in ms. Default 15_000. */

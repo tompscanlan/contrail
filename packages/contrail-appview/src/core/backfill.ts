@@ -262,6 +262,11 @@ export async function backfillUser(
         await applyEvents(db, events, config, {
           skipReplayDetection: options?.skipReplayDetection,
           skipFeedFanout: true,
+          // Fan out backfilled records to the realtime pubsub so a derived
+          // index driven off `pubsub.publish` is repopulated on rebuild.
+          // NOTE: this also delivers the whole replay to live subscribers, who
+          // normally don't want history — the coupling a dedicated sink avoids.
+          pubsub: config?.realtime?.pubsub,
         });
       }
       totalInserted += events.length;
