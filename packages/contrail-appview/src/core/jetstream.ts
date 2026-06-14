@@ -20,20 +20,22 @@ const BATCH_SIZE = 50;
  *  prune's per-tick CPU regardless of how large feed_items grows. */
 export const FEED_PRUNE_SWEEP_ACTORS = 500;
 
-/** Force a feed sweep often enough that a *full pass* over every actor completes
- *  at least this often even when no feed-relevant records are ingested, so
- *  over-cap rows that predate a config change (e.g. a lowered cap) or a bulk
- *  import still drain. Steady-state pruning is driven by ingest; this is only
- *  the safety net. */
+/** How long after a completed full pass the recovery sweep becomes due again,
+ *  even when no feed-relevant records are ingested, so over-cap rows that
+ *  predate a config change (e.g. a lowered cap) or a bulk import still drain.
+ *  Once due, the pass advances one slice per tick, so a full pass *completes*
+ *  roughly every (this interval + lap time), where lap time is
+ *  ceil(actors / FEED_PRUNE_SWEEP_ACTORS) ticks. Steady-state pruning is driven
+ *  by ingest; this is only the safety net. */
 export const FEED_PRUNE_RECOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 
 /** `_contrail_meta` key for the wall-clock (ms) at which the rolling feed sweep
  *  last *completed a full pass* over every actor, so a recycled cron isolate can
  *  honor the recovery interval across ticks. Tracking pass completion (not the
- *  last slice) is what makes the recovery interval mean "a full drain at least
- *  every 6h" rather than "one bounded slice every 6h" — without it, a single
- *  slice resets the clock and a feed touched just after the cursor passed it
- *  could wait many intervals to be revisited. */
+ *  last slice) is what keeps the recovery interval measuring from a real drain
+ *  rather than from one bounded slice — without it, a single slice resets the
+ *  clock and a feed touched just after the cursor passed it could wait many
+ *  intervals to be revisited. */
 const FEED_PRUNE_LAST_FULL_PASS_META = "feed_prune_last_full_pass_ms";
 
 /** `_contrail_meta` key for the persisted optimize cadence (so recycled cron
@@ -86,12 +88,14 @@ export async function runFeedPruneSlice(
  *  shared by the recycling cron isolate and the stateless `notifyOfUpdate` path
  *  (the long-lived persistent loop uses its in-memory clocks instead). Slices
  *  when `feedTouched` (a feed-mutating record was just ingested) or when a full
- *  pass is overdue, and records pass completion so the recovery interval means
- *  "a full drain at least every interval" rather than "one slice per interval".
+ *  pass is overdue, and records pass completion so the recovery clock measures
+ *  from a real drain (one slice per tick until the cursor wraps) rather than
+ *  resetting on a single slice.
  *
  *  The slice advances the shared rolling cursor, which is NOT necessarily the
- *  actor the mutation touched: a fan-out follower outside the current page is
- *  pruned by a later slice within the recovery interval, not instantly. That is
+ *  actor the mutation touched: a fan-out follower the cursor has already passed
+ *  is pruned by the next pass, up to about one recovery interval later, not
+ *  instantly. That is
  *  the deliberate trade for a per-tick cost bounded by `FEED_PRUNE_SWEEP_ACTORS`
  *  rather than by fan-out size (a popular author has unboundedly many followers).
  *  feed_items is a soft cache, so a follower sitting a few rows over cap until
@@ -126,9 +130,10 @@ export interface IngestState {
    *  isolate persists its clocks in `_contrail_meta` instead. */
   lastFeedSweepMs: number;
   /** Wall-clock at which the persistent loop last *completed a full sweep pass*
-   *  over every actor. Drives the recovery interval (a complete drain at least
-   *  every {@link FEED_PRUNE_RECOVERY_INTERVAL_MS}), independent of the
-   *  ingest-driven throttle above. The cron isolate persists the equivalent in
+   *  over every actor. Drives the recovery interval (a fresh pass becomes due
+   *  {@link FEED_PRUNE_RECOVERY_INTERVAL_MS} after the last one completed, then
+   *  laps one slice per tick), independent of the ingest-driven throttle above.
+   *  The cron isolate persists the equivalent in
    *  `_contrail_meta`. */
   lastFullFeedPassMs: number;
   /** Set by the persistent loop when a flushed batch ingested a feed-mutating
