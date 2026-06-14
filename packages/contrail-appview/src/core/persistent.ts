@@ -4,13 +4,19 @@ import {
   getCollectionNsids,
   getDependentNsids,
   buildFeedTargetCaps,
+  getFeedMutatingNsids,
   resolveConfig,
   shortNameForNsid,
 } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
-import { createIngestState, FEED_PRUNE_SWEEP_ACTORS, maybeOptimize } from "./jetstream";
+import {
+  createIngestState,
+  FEED_PRUNE_SWEEP_ACTORS,
+  FEED_PRUNE_RECOVERY_INTERVAL_MS,
+  maybeOptimize,
+} from "./jetstream";
 import type { IngestState } from "./jetstream";
 
 /** How often the long-lived persistent loop runs a bounded feed sweep. The
@@ -154,6 +160,16 @@ async function streamAndFlush(
     try {
       await applyEvents(db, batch, config, { pubsub: opts.pubsub });
 
+      // A feed can only go over cap right after a feed-mutating record is
+      // applied, so remember whether this batch had one. The sweep below uses
+      // it to skip work on idle windows (see the cron path in jetstream.ts).
+      if (config.feeds) {
+        const feedMutatingNsids = getFeedMutatingNsids(config);
+        if (batch.some((e) => feedMutatingNsids.has(e.collection))) {
+          state.feedDirty = true;
+        }
+      }
+
       const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
       await saveCursor(db, lastTimeUs);
 
@@ -180,9 +196,16 @@ async function streamAndFlush(
       }
 
       // Bounded, cursored feed prune (see sweepFeedItems). This process is
-      // long-lived, so the in-memory interval is a reliable throttle; the
-      // cursor is still persisted so progress carries across restarts.
-      if (config.feeds && Date.now() - state.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS) {
+      // long-lived, so the in-memory clock is a reliable throttle; the cursor is
+      // still persisted so progress carries across restarts. A feed only goes
+      // over cap after a feed-mutating record is applied, so sweep only when a
+      // batch since the last sweep was feed-dirty (throttled by the sweep
+      // interval), and otherwise only on the slow recovery interval — so idle
+      // streams stop re-running the no-op sweep every 10s.
+      const sinceSweepMs = Date.now() - state.lastFeedSweepMs;
+      const dirtyDue = state.feedDirty && sinceSweepMs > FEED_SWEEP_INTERVAL_MS;
+      const recoveryDue = sinceSweepMs > FEED_PRUNE_RECOVERY_INTERVAL_MS;
+      if (config.feeds && (dirtyDue || recoveryDue)) {
         const caps = buildFeedTargetCaps(config);
         if (caps.size > 0) {
           const cursor = await getFeedPruneCursor(db);
@@ -193,8 +216,13 @@ async function streamAndFlush(
             FEED_PRUNE_SWEEP_ACTORS
           );
           await saveFeedPruneCursor(db, nextCursor);
-          if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
+          if (pruned > 0) {
+            log.log(
+              `Pruned ${pruned} feed items (sweep, reason=${dirtyDue ? "ingest" : "recovery"})`
+            );
+          }
         }
+        state.feedDirty = false;
         state.lastFeedSweepMs = Date.now();
       }
 

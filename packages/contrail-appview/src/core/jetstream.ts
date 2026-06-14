@@ -5,6 +5,7 @@ import {
   getDependentNsids,
   shortNameForNsid,
   buildFeedTargetCaps,
+  getFeedMutatingNsids,
   optimizeEnabled,
   optimizeIntervalMs,
   optimizeAnalysisLimit,
@@ -18,6 +19,16 @@ const BATCH_SIZE = 50;
  *  actor costs a handful of index-backed O(cap) deletes, so this bounds the
  *  prune's per-tick CPU regardless of how large feed_items grows. */
 export const FEED_PRUNE_SWEEP_ACTORS = 500;
+
+/** Force a feed sweep at least this often even when no feed-relevant records
+ *  were ingested, so over-cap rows that predate a config change (e.g. a lowered
+ *  cap) or a bulk import still drain. Steady-state pruning is driven by ingest;
+ *  this is only the safety net. */
+export const FEED_PRUNE_RECOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+
+/** `_contrail_meta` key for the wall-clock (ms) of the last feed sweep, so a
+ *  recycled cron isolate can honor the recovery interval across ticks. */
+const FEED_PRUNE_LAST_SWEEP_META = "feed_prune_last_sweep_ms";
 
 /** `_contrail_meta` key for the persisted optimize cadence (so recycled cron
  *  isolates don't re-run it every tick — the in-memory-state bug we hit with
@@ -47,13 +58,18 @@ export interface IngestState {
   cachedKnownDids?: Set<string>;
   schemaInitialized: boolean;
   /** Wall-clock of the last feed sweep — used only by the long-lived
-   *  persistent loop to throttle; the recycling cron isolate sweeps every
-   *  tick and relies on the persisted cursor instead. */
+   *  persistent loop to throttle; the recycling cron isolate persists the
+   *  sweep clock in `_contrail_meta` instead. */
   lastFeedSweepMs: number;
+  /** Set by the persistent loop when a flushed batch ingested a feed-mutating
+   *  record, so the next sweep window knows there may be prune work. Cleared
+   *  when the sweep runs. The cron path makes the same decision per-tick from
+   *  its `events` array and doesn't need the flag. */
+  feedDirty: boolean;
 }
 
 export function createIngestState(): IngestState {
-  return { schemaInitialized: false, lastFeedSweepMs: 0 };
+  return { schemaInitialized: false, lastFeedSweepMs: 0, feedDirty: false };
 }
 
 function getLogger(config: ContrailConfig): Logger {
@@ -421,21 +437,39 @@ export async function runIngestCycle(
   // Prune feed_items to per-collection caps with a bounded, cursored sweep.
   // Every statement is index-backed and O(cap) (see sweepFeedItems), so it can
   // never exhaust D1's per-query CPU budget and reset the shared DO — unlike
-  // the old global window+anti-join. The cron isolate recycles each tick, so we
-  // persist the sweep cursor in the DB rather than gating on in-memory time,
-  // and run an unconditional bounded slice every tick.
+  // the old global window+anti-join. The cron isolate recycles each tick, so the
+  // sweep cursor and the recovery clock both live in the DB.
+  //
+  // A feed only goes over cap right after a row is inserted, and rows are only
+  // inserted for feed-mutating collections (event fan-out, follow backfill). So
+  // we skip the sweep entirely on ticks that ingested nothing feed-relevant —
+  // the overwhelming majority — and only force one on a slow recovery interval
+  // so pre-existing over-cap rows (a lowered cap, a bulk import) still drain.
   if (config.feeds) {
     const caps = buildFeedTargetCaps(config);
     if (caps.size > 0) {
-      const cursor = await getFeedPruneCursor(db);
-      const { pruned, nextCursor } = await sweepFeedItems(
-        db,
-        caps,
-        cursor,
-        FEED_PRUNE_SWEEP_ACTORS
-      );
-      await saveFeedPruneCursor(db, nextCursor);
-      if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
+      const feedMutatingNsids = getFeedMutatingNsids(config);
+      const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
+      const nowMs = Math.floor(nowUs / 1000);
+      const lastSweepMs =
+        (await getMetaNumber(db, FEED_PRUNE_LAST_SWEEP_META)) ?? 0;
+      const recoveryDue = nowMs - lastSweepMs >= FEED_PRUNE_RECOVERY_INTERVAL_MS;
+      if (feedTouched || recoveryDue) {
+        const cursor = await getFeedPruneCursor(db);
+        const { pruned, nextCursor } = await sweepFeedItems(
+          db,
+          caps,
+          cursor,
+          FEED_PRUNE_SWEEP_ACTORS
+        );
+        await saveFeedPruneCursor(db, nextCursor);
+        await setMeta(db, FEED_PRUNE_LAST_SWEEP_META, String(nowMs));
+        if (pruned > 0) {
+          log.log(
+            `Pruned ${pruned} feed items (sweep, reason=${feedTouched ? "ingest" : "recovery"})`
+          );
+        }
+      }
     }
   }
 
