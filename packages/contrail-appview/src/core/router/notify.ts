@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
 import { shortNameForNsid, getFeedMutatingNsids } from "../types";
 import { applyEvents, lookupExistingRecords } from "../db/records";
-import { runFeedPruneSlice } from "../jetstream";
+import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
@@ -138,15 +138,14 @@ export async function processNotifyUris(
 
     // applyEvents fans these records into feed_items exactly like the cron and
     // persistent ingest paths, so prune here too — otherwise a notify-only
-    // deployment (no jetstream loop) would never sweep, and on a mixed
-    // deployment a notify-driven fan-out would wait for the next ingest tick or
-    // the recovery interval to drain. Advancing the shared rolling cursor keeps
-    // the cron/persistent recovery pass as the backstop.
+    // deployment (no jetstream loop) would never sweep. Reusing the cron path's
+    // recovery-aware gate means a notify-only deployment still completes a full
+    // sweep pass per recovery interval (driven by notify traffic) rather than
+    // pruning only one arbitrary slice per call.
     if (config.feeds) {
       const feedMutatingNsids = getFeedMutatingNsids(config);
-      if (events.some((e) => feedMutatingNsids.has(e.collection))) {
-        await runFeedPruneSlice(db, config);
-      }
+      const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
+      await runGatedFeedPrune(db, config, feedTouched);
     }
   }
 

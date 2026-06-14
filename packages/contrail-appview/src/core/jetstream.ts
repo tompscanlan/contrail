@@ -82,6 +82,41 @@ export async function runFeedPruneSlice(
   return { pruned, done };
 }
 
+/** Gate and run one feed-prune slice against the *persisted* recovery clock —
+ *  shared by the recycling cron isolate and the stateless `notifyOfUpdate` path
+ *  (the long-lived persistent loop uses its in-memory clocks instead). Slices
+ *  when `feedTouched` (a feed-mutating record was just ingested) or when a full
+ *  pass is overdue, and records pass completion so the recovery interval means
+ *  "a full drain at least every interval" rather than "one slice per interval".
+ *
+ *  The slice advances the shared rolling cursor, which is NOT necessarily the
+ *  actor the mutation touched: a fan-out follower outside the current page is
+ *  pruned by a later slice within the recovery interval, not instantly. That is
+ *  the deliberate trade for a per-tick cost bounded by `FEED_PRUNE_SWEEP_ACTORS`
+ *  rather than by fan-out size (a popular author has unboundedly many followers).
+ *  feed_items is a soft cache, so a follower sitting a few rows over cap until
+ *  the next slice is harmless. No-op when feeds are unconfigured. */
+export async function runGatedFeedPrune(
+  db: Database,
+  config: ContrailConfig,
+  feedTouched: boolean
+): Promise<void> {
+  if (!config.feeds) return;
+  if (buildFeedTargetCaps(config).size === 0) return;
+  const nowMs = Date.now();
+  const lastFullPassMs =
+    (await getMetaNumber(db, FEED_PRUNE_LAST_FULL_PASS_META)) ?? 0;
+  const recoveryDue = nowMs - lastFullPassMs >= FEED_PRUNE_RECOVERY_INTERVAL_MS;
+  if (!feedTouched && !recoveryDue) return;
+  const { pruned, done } = await runFeedPruneSlice(db, config);
+  if (done) await setMeta(db, FEED_PRUNE_LAST_FULL_PASS_META, String(nowMs));
+  if (pruned > 0) {
+    getLogger(config).log(
+      `Pruned ${pruned} feed items (sweep, reason=${feedTouched ? "ingest" : "recovery"})`
+    );
+  }
+}
+
 /** Mutable state that persists across ingest cycles within the same process. */
 export interface IngestState {
   cachedKnownDids?: Set<string>;
@@ -495,20 +530,7 @@ export async function runIngestCycle(
   if (config.feeds) {
     const feedMutatingNsids = getFeedMutatingNsids(config);
     const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
-    const nowMs = Math.floor(nowUs / 1000);
-    const lastFullPassMs =
-      (await getMetaNumber(db, FEED_PRUNE_LAST_FULL_PASS_META)) ?? 0;
-    const recoveryDue =
-      nowMs - lastFullPassMs >= FEED_PRUNE_RECOVERY_INTERVAL_MS;
-    if (feedTouched || recoveryDue) {
-      const { pruned, done } = await runFeedPruneSlice(db, config);
-      if (done) await setMeta(db, FEED_PRUNE_LAST_FULL_PASS_META, String(nowMs));
-      if (pruned > 0) {
-        log.log(
-          `Pruned ${pruned} feed items (sweep, reason=${feedTouched ? "ingest" : "recovery"})`
-        );
-      }
-    }
+    await runGatedFeedPrune(db, config, feedTouched);
   }
 
   // Opt-in planner-stat maintenance (gated + persisted cadence; no-op unless
