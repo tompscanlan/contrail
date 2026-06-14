@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
-import { shortNameForNsid } from "../types";
+import { shortNameForNsid, getFeedMutatingNsids } from "../types";
 import { applyEvents, lookupExistingRecords } from "../db/records";
+import { runFeedPruneSlice } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
@@ -134,6 +135,19 @@ export async function processNotifyUris(
   if (events.length > 0) {
     // Pass pre-fetched existing records so applyEvents skips re-querying
     await applyEvents(db, events, config, { existing });
+
+    // applyEvents fans these records into feed_items exactly like the cron and
+    // persistent ingest paths, so prune here too — otherwise a notify-only
+    // deployment (no jetstream loop) would never sweep, and on a mixed
+    // deployment a notify-driven fan-out would wait for the next ingest tick or
+    // the recovery interval to drain. Advancing the shared rolling cursor keeps
+    // the cron/persistent recovery pass as the backstop.
+    if (config.feeds) {
+      const feedMutatingNsids = getFeedMutatingNsids(config);
+      if (events.some((e) => feedMutatingNsids.has(e.collection))) {
+        await runFeedPruneSlice(db, config);
+      }
+    }
   }
 
   return {
