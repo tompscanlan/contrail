@@ -9,7 +9,7 @@ import {
   getCollectionMethods,
 } from "../types";
 import { queryRecords, queryAcrossSources } from "../db";
-import type { SortOption } from "../db/records";
+import type { SortOption, QueryOptions } from "../db/records";
 import { backfillUser } from "../backfill";
 import { resolveHydrates, resolveReferences, parseHydrateParams } from "./hydrate";
 import { resolveProfiles, collectDids } from "./profiles";
@@ -314,7 +314,7 @@ export async function runPipeline(
   }
 
   const filters: Record<string, string> = {};
-  const rangeFilters: Record<string, { min?: string; max?: string }> = {};
+  const rangeFilters: NonNullable<QueryOptions["rangeFilters"]> = {};
   for (const [field, fieldConfig] of Object.entries(queryableFields)) {
     const param = fieldToParam(field);
     if (fieldConfig.type === "range") {
@@ -324,6 +324,12 @@ export async function runPipeline(
         rangeFilters[field] = {};
         if (min) rangeFilters[field].min = min;
         if (max) rangeFilters[field].max = max;
+        // Opt-in, because it changes what a bound MEANS: without it a bound is
+        // "has this field, within range", with it "within range, or hasn't got
+        // one". Existing callers keep the stricter reading.
+        if (params.get(`${param}IncludeMissing`) === "true") {
+          rangeFilters[field].includeMissing = true;
+        }
       }
     } else {
       const value = params.get(param);

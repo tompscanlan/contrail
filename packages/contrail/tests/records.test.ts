@@ -297,3 +297,81 @@ describe("queryRecords", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("queryRecords range filters on an optional field", () => {
+  // One record in range with an end, one that ended before it, and two with no
+  // end at all — the shape a calendar has, where `endsAt` is optional.
+  beforeEach(async () => {
+    await applyEvents(db, [
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/has-end",
+        rkey: "has-end",
+        record: {
+          name: "Has end",
+          startsAt: "2026-02-01T00:00:00Z",
+          endsAt: "2026-02-02T00:00:00Z",
+        },
+        time_us: 4000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/ended",
+        rkey: "ended",
+        record: {
+          name: "Ended",
+          startsAt: "2026-01-01T00:00:00Z",
+          endsAt: "2026-01-02T00:00:00Z",
+        },
+        time_us: 3000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/no-end",
+        rkey: "no-end",
+        record: { name: "No end", startsAt: "2026-02-01T00:00:00Z" },
+        time_us: 2000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/null-end",
+        rkey: "null-end",
+        record: { name: "Null end", startsAt: "2026-02-01T00:00:00Z", endsAt: null },
+        time_us: 1000,
+      }),
+    ]);
+  });
+
+  const names = (result: Awaited<ReturnType<typeof queryRecords>>) =>
+    result.records.map((r) => JSON.parse(r.record!).name).sort();
+
+  it("drops records missing the field by default", async () => {
+    const result = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      rangeFilters: { endsAt: { min: "2026-01-15T00:00:00Z" } },
+    });
+    // `NULL >= 'x'` is NULL, not true, so the two endless records drop out
+    // alongside the one that genuinely ended before the bound.
+    expect(names(result)).toEqual(["Has end"]);
+  });
+
+  it("keeps records missing the field when includeMissing is set", async () => {
+    const result = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      rangeFilters: { endsAt: { min: "2026-01-15T00:00:00Z", includeMissing: true } },
+    });
+    // An absent key and an explicit JSON null both read as SQL NULL, so both join
+    // the record genuinely in range. The one that ENDED is still excluded —
+    // includeMissing widens the filter, it does not disable it.
+    expect(names(result)).toEqual(["Has end", "No end", "Null end"]);
+  });
+
+  it("combines with a second bound to express a window", async () => {
+    const result = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      rangeFilters: {
+        startsAt: { max: "2026-02-01T00:00:00Z" },
+        endsAt: { min: "2026-01-15T00:00:00Z", includeMissing: true },
+      },
+    });
+    // The "happening now" shape: already started, and either not finished or
+    // carrying no end time at all.
+    expect(names(result)).toEqual(["Has end", "No end", "Null end"]);
+  });
+});

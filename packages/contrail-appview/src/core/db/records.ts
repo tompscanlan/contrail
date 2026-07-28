@@ -821,7 +821,19 @@ export interface QueryOptions {
   limit?: number;
   cursor?: string;
   filters?: Record<string, string>;
-  rangeFilters?: Record<string, { min?: string; max?: string }>;
+  rangeFilters?: Record<
+    string,
+    {
+      min?: string;
+      max?: string;
+      /** Also match records where the field is absent or JSON null. A bare
+       *  comparison drops them: SQL `NULL >= 'x'` is NULL, not true. Optional
+       *  record fields are the common case — a calendar event may carry no
+       *  `endsAt` — so a caller bounding on one otherwise deletes every record
+       *  that omits it from the result rather than filtering on it. */
+      includeMissing?: boolean;
+    }
+  >;
   countFilters?: Record<string, number>;
   sort?: SortOption;
   search?: string;
@@ -908,12 +920,18 @@ export async function queryRecords(
   }
 
   for (const [field, range] of Object.entries(rangeFilters)) {
+    const expr = getDialect(db).jsonExtract('r.record', field);
+    // json_extract yields SQL NULL for both an absent key and a JSON null, so one
+    // IS NULL covers each. Applied per bound, not around the pair: a caller asking
+    // for `min` alone gets "at least this, or unset", which is the whole point.
+    const bound = (cmp: string) =>
+      range.includeMissing ? `(${expr} ${cmp} ? OR ${expr} IS NULL)` : `${expr} ${cmp} ?`;
     if (range.min != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} >= ?`);
+      conditions.push(bound('>='));
       bindings.push(range.min);
     }
     if (range.max != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} <= ?`);
+      conditions.push(bound('<='));
       bindings.push(range.max);
     }
   }
