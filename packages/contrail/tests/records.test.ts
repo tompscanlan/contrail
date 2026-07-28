@@ -297,3 +297,110 @@ describe("queryRecords", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("queryRecords COALESCE fallback for optional fields", () => {
+  // A live event (started, not finished), one that ended, and two with no end at
+  // all — the shape a calendar has, where `endsAt` is optional.
+  beforeEach(async () => {
+    await applyEvents(db, [
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/live",
+        rkey: "live",
+        record: {
+          name: "Live",
+          startsAt: "2026-02-01T00:00:00Z",
+          endsAt: "2026-02-20T00:00:00Z",
+        },
+        time_us: 4000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/ended",
+        rkey: "ended",
+        record: {
+          name: "Ended",
+          startsAt: "2026-01-01T00:00:00Z",
+          endsAt: "2026-01-02T00:00:00Z",
+        },
+        time_us: 3000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/no-end-future",
+        rkey: "no-end-future",
+        record: { name: "No end, future", startsAt: "2026-03-01T00:00:00Z" },
+        time_us: 2000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:a/community.lexicon.calendar.event/no-end-past",
+        rkey: "no-end-past",
+        record: { name: "No end, past", startsAt: "2026-01-05T00:00:00Z" },
+        time_us: 1000,
+      }),
+    ]);
+  });
+
+  const names = (result: Awaited<ReturnType<typeof queryRecords>>) =>
+    result.records.map((r) => JSON.parse(r.record!).name);
+
+  it("drops records missing the bounded field without a fallback", async () => {
+    const result = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      rangeFilters: { endsAt: { min: "2026-02-10T00:00:00Z" } },
+    });
+    // Both endless records vanish: `NULL >= 'x'` is NULL, not true.
+    expect(names(result).sort()).toEqual(["Live"]);
+  });
+
+  it("treats startsAt as the end time when endsAt is absent", async () => {
+    const result = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      rangeFilters: {
+        endsAt: { min: "2026-02-10T00:00:00Z", fallbackField: "startsAt" },
+      },
+    });
+    // "Hasn't ended yet" — the same rule the app's own hasEnded() uses
+    // (endsAt || startsAt). The future endless event qualifies; the past one
+    // does not, which a bare includeMissing could not distinguish.
+    expect(names(result).sort()).toEqual(["Live", "No end, future"]);
+  });
+
+  it("sorts on the coalesced key and pages through it with a cursor", async () => {
+    const opts = {
+      collection: "community.lexicon.calendar.event",
+      sort: { recordField: "endsAt", fallbackField: "startsAt", direction: "asc" as const },
+    };
+    const all = await queryRecords(db, TEST_CONFIG, opts);
+    // Ordered by effective end: Ended (Jan 2), No end past (Jan 5),
+    // Live (Feb 20), No end future (Mar 1).
+    expect(names(all)).toEqual(["Ended", "No end, past", "Live", "No end, future"]);
+
+    // The keyset cursor has to carry the COALESCED value, or paging skips rows.
+    const page1 = await queryRecords(db, TEST_CONFIG, { ...opts, limit: 2 });
+    expect(names(page1)).toEqual(["Ended", "No end, past"]);
+    const page2 = await queryRecords(db, TEST_CONFIG, {
+      ...opts,
+      limit: 2,
+      cursor: page1.cursor,
+    });
+    expect(names(page2)).toEqual(["Live", "No end, future"]);
+  });
+
+  it("rejects a cursor minted under a different fallback", async () => {
+    const withFallback = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      sort: { recordField: "endsAt", fallbackField: "startsAt", direction: "asc" },
+      limit: 2,
+    });
+    // Same field, no fallback: a different sort key, so the cursor must not be
+    // honoured — it would resume at a value this ordering never produced.
+    const resumed = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      sort: { recordField: "endsAt", direction: "asc" },
+      limit: 2,
+      cursor: withFallback.cursor,
+    });
+    // Rejected, so this is page 1 of the plain endsAt ordering — where SQLite
+    // sorts the NULL endsAt records FIRST. That ordering is exactly why a list
+    // wants the fallback: without it, the events with no end time lead the feed.
+    expect(names(resumed)).toEqual(["No end, future", "No end, past"]);
+  });
+});

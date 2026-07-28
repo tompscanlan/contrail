@@ -783,6 +783,29 @@ export interface SortOption {
   recordField?: string;
   countType?: string;
   direction: "asc" | "desc";
+  /** Sort on `recordField`, falling back to this field where the first is absent
+   *  or JSON null. Compiles to COALESCE, so it stays ONE expression — which is
+   *  what lets the keyset cursor keep working: the cursor value must be the same
+   *  thing the ORDER BY sorted on. Only meaningful alongside `recordField`. */
+  fallbackField?: string;
+}
+
+/** The SQL expression for a record field, optionally coalesced with a fallback.
+ *  One helper so the WHERE clause, the ORDER BY and the keyset cursor condition
+ *  cannot disagree about what the sort key IS — if they ever do, paging silently
+ *  skips or repeats rows. */
+function recordFieldExpr(db: Database, field: string, fallbackField?: string): string {
+  const expr = getDialect(db).jsonExtract("r.record", field);
+  if (!fallbackField) return expr;
+  return `COALESCE(${expr}, ${getDialect(db).jsonExtract("r.record", fallbackField)})`;
+}
+
+/** The JS-side twin of `recordFieldExpr`, for building a cursor from a row and
+ *  for the in-memory merge comparator. Must track it exactly. */
+function recordFieldValue(parsed: unknown, field: string, fallbackField?: string): unknown {
+  const v = getNestedValue(parsed, field);
+  if (v != null || !fallbackField) return v;
+  return getNestedValue(parsed, fallbackField);
 }
 
 /** Opaque keyset cursor. `t` is the tiebreaker (time_us of the last row),
@@ -795,7 +818,14 @@ interface CursorPayload {
 }
 
 function sortKind(sort?: SortOption): "time" | string {
-  if (sort?.recordField) return `field:${sort.recordField}`;
+  // The fallback is part of the sort's identity: a cursor minted while sorting on
+  // COALESCE(endsAt, startsAt) holds values from a different key than a plain
+  // endsAt sort, so it must not be accepted by one.
+  if (sort?.recordField) {
+    return sort.fallbackField
+      ? `field:${sort.recordField}|${sort.fallbackField}`
+      : `field:${sort.recordField}`;
+  }
   if (sort?.countType) return `count:${sort.countType}`;
   return "time";
 }
@@ -821,7 +851,19 @@ export interface QueryOptions {
   limit?: number;
   cursor?: string;
   filters?: Record<string, string>;
-  rangeFilters?: Record<string, { min?: string; max?: string }>;
+  rangeFilters?: Record<
+    string,
+    {
+      min?: string;
+      max?: string;
+      /** Bound COALESCE(field, fallbackField) instead of the field alone. A bare
+       *  comparison drops records where the field is absent — SQL `NULL >= 'x'`
+       *  is NULL, not true — which silently deletes them from the result rather
+       *  than filtering on them. Naming the field that stands in when it is
+       *  missing keeps them, and keeps the bound meaningful for them. */
+      fallbackField?: string;
+    }
+  >;
   countFilters?: Record<string, number>;
   sort?: SortOption;
   search?: string;
@@ -883,7 +925,7 @@ export async function queryRecords(
     const payload = decodeCursor(cursor);
     if (payload && payload.k === expectedKind) {
       if (sort?.recordField) {
-        const sortExpr = getDialect(db).jsonExtract('r.record', sort.recordField);
+        const sortExpr = recordFieldExpr(db, sort.recordField, sort.fallbackField);
         const cmp = sort.direction === "desc" ? "<" : ">";
         conditions.push(`(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND r.time_us < ?))`);
         const v = payload.v ?? "";
@@ -908,12 +950,13 @@ export async function queryRecords(
   }
 
   for (const [field, range] of Object.entries(rangeFilters)) {
+    const expr = recordFieldExpr(db, field, range.fallbackField);
     if (range.min != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} >= ?`);
+      conditions.push(`${expr} >= ?`);
       bindings.push(range.min);
     }
     if (range.max != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} <= ?`);
+      conditions.push(`${expr} <= ?`);
       bindings.push(range.max);
     }
   }
@@ -953,7 +996,7 @@ export async function queryRecords(
   let orderBy: string;
   if (sort?.recordField) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderBy = `${getDialect(db).jsonExtract('r.record', sort.recordField)} ${dir}, r.time_us DESC`;
+    orderBy = `${recordFieldExpr(db, sort.recordField, sort.fallbackField)} ${dir}, r.time_us DESC`;
   } else if (sort?.countType) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
     const sortCol = countColumnForType(config, collection, sort.countType);
@@ -1019,7 +1062,9 @@ function buildCursor(
   const t = Number(row.time_us);
   if (sort?.recordField) {
     const parsed = row.record ? JSON.parse(row.record) : null;
-    const v = parsed ? getNestedValue(parsed, sort.recordField) : undefined;
+    const v = parsed
+      ? recordFieldValue(parsed, sort.recordField, sort.fallbackField)
+      : undefined;
     return encodeCursor({ t, v: v == null ? "" : String(v), k: kind });
   }
   if (sort?.countType) {
@@ -1040,8 +1085,8 @@ function compareRows(
   if (sort?.recordField) {
     const ar = a.record ? JSON.parse(a.record) : null;
     const br = b.record ? JSON.parse(b.record) : null;
-    const av = ar ? getNestedValue(ar, sort.recordField) : undefined;
-    const bv = br ? getNestedValue(br, sort.recordField) : undefined;
+    const av = ar ? recordFieldValue(ar, sort.recordField, sort.fallbackField) : undefined;
+    const bv = br ? recordFieldValue(br, sort.recordField, sort.fallbackField) : undefined;
     const dir = sort.direction === "desc" ? -1 : 1;
     const cmp = (av === bv ? 0 : (av! < bv! ? -1 : 1)) * dir;
     return cmp !== 0 ? cmp : timeCmp;

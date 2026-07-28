@@ -17,6 +17,9 @@ export const TEST_CONFIG: ResolvedContrailConfig = resolveConfig({
         mode: {},
         name: {},
         startsAt: { type: "range" },
+        // Optional on the lexicon — the field that exercises what a bound does
+        // with records that simply haven't got one.
+        endsAt: { type: "range" },
       },
       relations: {
         rsvps: {
