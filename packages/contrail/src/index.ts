@@ -26,10 +26,28 @@ export * from "./core/generations";
 export * from "./core/pds-snapshot";
 export * from "./core/jetstream-source";
 export * from "./core/jetstream";
+export {
+  JetstreamLiveHistoryExpiredError,
+} from "./core/jetstream-live";
+export type { JetstreamLiveEvent } from "./core/jetstream-live";
 export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";
 export * from "./core/diagnostics";
+export {
+  getChangeLogCostPlan,
+  getChangeLogState,
+  MAX_CHANGE_BATCH_BYTES,
+  MAX_CHANGE_BATCH_CHANGES,
+} from "./core/change-log";
+export type {
+  ChangeLogCostPlan,
+  ChangeLogState,
+  RecordChange,
+} from "./core/change-log";
+export * from "./core/changes";
+export * from "./core/change-bootstrap";
+export * from "./core/delivery";
 export * from "./core/service-auth";
 export * from "./core/validation";
 export * from "./core/search";

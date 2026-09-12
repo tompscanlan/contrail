@@ -3,7 +3,9 @@ import type {
   ContrailConfig,
   Database,
   IngestEvent,
+  Logger,
   MutationSource,
+  ProjectionPhase,
   Statement,
 } from "./types";
 import {
@@ -11,10 +13,14 @@ import {
   resolveCollectionKey,
 } from "./types";
 import {
+  isProjectionConflictError,
+  lookupRecordVersions,
   projectEvents,
   selectAuthoritativeMutations,
-  selectCurrentMutations,
+  selectMutationWinners,
   type ExistingRecordInfo,
+  type MutationSelection,
+  type RecordVersionInfo,
 } from "./db/records";
 import {
   addIngestDiagnosticCounts,
@@ -99,6 +105,13 @@ export function recordTimeUs(
   return microseconds > fallbackUs ? fallbackUs : microseconds;
 }
 
+export interface IngestWarningSamples {
+  /** Fixed maximum number of warning strings retained by the caller. */
+  maxSamples: number;
+  samples: string[];
+  omitted: number;
+}
+
 export interface IngestProjection {
   /** Select mutations newer than this projection's durable version state. */
   selectCurrent(
@@ -135,9 +148,14 @@ export interface IngestRecordsOptions {
   /** The source response is a current authoritative snapshot, so it supersedes
    * durable observations without a redundant version lookup. */
   authoritativeSourceObservation?: boolean;
+  /** Acquisition phase for optional durable consumers. Defaults to live for
+   * backwards-compatible direct ingestRecords() calls. */
+  phase?: ProjectionPhase;
   /** @internal Aggregate private diagnostics for one bulk run. The caller
    * flushes this bounded object once after concurrent page processing. */
   aggregateDiagnostics?: IngestDiagnosticCounts;
+  /** Collect bounded warning details instead of logging per-record lines. */
+  warningSamples?: IngestWarningSamples;
 }
 
 export interface IngestDropCounts {
@@ -159,6 +177,22 @@ export interface IngestRecordsResult {
   dropped: IngestDropCounts;
   /** Discoverable actors admitted by this batch but absent from knownDids. */
   discoveredDids: string[];
+}
+
+function emitIngestWarning(
+  logger: Pick<Logger, "warn">,
+  samples: IngestWarningSamples | undefined,
+  message: string,
+): void {
+  if (!samples) {
+    logger.warn(message);
+    return;
+  }
+  if (samples.samples.length >= samples.maxSamples) {
+    samples.omitted++;
+    return;
+  }
+  samples.samples.push(message.slice(0, 320));
 }
 
 /**
@@ -199,7 +233,9 @@ export async function ingestRecords(
     const shortName = resolveCollectionKey(config, event.collection);
     if (!shortName) {
       dropped.unknownCollection++;
-      logger.warn(
+      emitIngestWarning(
+        logger,
+        options.warningSamples,
         `[ingest] drop unknown collection: ${event.operation} ${event.uri} collection=${event.collection}`,
       );
       continue;
@@ -208,7 +244,11 @@ export async function ingestRecords(
       event.operation === "delete" ? null : parseRecord(event.record);
     if (event.operation !== "delete" && !record) {
       dropped.invalidRecord++;
-      logger.warn(`[ingest] drop invalid record: ${event.uri}`);
+      emitIngestWarning(
+        logger,
+        options.warningSamples,
+        `[ingest] drop invalid record: ${event.uri}`,
+      );
       continue;
     }
     candidates.push({ event, shortName, record });
@@ -270,7 +310,11 @@ export async function ingestRecords(
         try {
           keep = filter(record);
         } catch (error) {
-          logger.warn(`[ingest] recordFilter threw for ${event.uri}: ${error}`);
+          emitIngestWarning(
+            logger,
+            options.warningSamples,
+            `[ingest] recordFilter threw for ${event.uri}: ${error}`,
+          );
         }
         if (!keep) {
           dropped.recordFilter++;
@@ -291,116 +335,165 @@ export async function ingestRecords(
     dropped.cidEncoding +
     dropped.missingCid;
   if (validationDropTotal > 0 && !options.aggregateDiagnostics) {
-    logger.warn(
+    emitIngestWarning(
+      logger,
+      options.warningSamples,
       `[ingest] dropped ${validationDropTotal} record(s) during validation ` +
         `(lexicon=${dropped.lexiconValidation}, cid_mismatch=${dropped.cidMismatch}, ` +
         `cid_encoding=${dropped.cidEncoding}, missing_cid=${dropped.missingCid})`,
     );
   }
 
-  // Reject duplicate/stale source observations before they can admit dependent
-  // actors in this batch. The winning versions are persisted with projection.
-  const ordered = options.authoritativeSourceObservation
-    ? selectAuthoritativeMutations(accepted)
-    : options.projection
-      ? await options.projection.selectCurrent(db, accepted)
-      : await selectCurrentMutations(db, accepted);
-  dropped.superseded += ordered.superseded;
-
-  const projectionExclusions = ordered.applied.filter((event) =>
-    policyExcluded.has(event),
-  );
-  const admitted = ordered.applied.filter((event) => !policyExcluded.has(event));
-
-  const effectiveKnownDids = options.knownDids
-    ? new Set(options.knownDids)
-    : undefined;
-  const discoveredDids: string[] = [];
-  if (effectiveKnownDids) {
-    for (const event of admitted) {
-      if (event.operation === "delete") continue;
-      const shortName = resolveCollectionKey(config, event.collection);
-      const collection = shortName ? config.collections[shortName] : undefined;
-      if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
-        continue;
-      }
-      effectiveKnownDids.add(event.did);
-      discoveredDids.push(event.did);
-    }
-  }
-
-  const actorFiltered: IngestEvent[] = [];
-  for (const event of admitted) {
-    if (event.operation === "delete" || !effectiveKnownDids) {
-      actorFiltered.push(event);
-      continue;
-    }
-    const shortName = resolveCollectionKey(config, event.collection);
-    const collection = shortName ? config.collections[shortName] : undefined;
-    if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
-      actorFiltered.push(event);
-      continue;
-    }
-    dropped.unknownActor++;
-  }
-
-  const subjectFiltered = await filterUnknownSubjects(
-    db,
-    config,
-    actorFiltered,
-    effectiveKnownDids,
-    dropped,
-  );
-
-  const projectionEvents = [
-    ...subjectFiltered,
-    ...projectionExclusions,
-  ];
-  const diagnosticCounts: IngestDiagnosticCounts = {
-    unknown_collection: dropped.unknownCollection,
-    invalid_json: dropped.invalidRecord,
-    lexicon_validation: dropped.lexiconValidation,
-    cid_mismatch: dropped.cidMismatch,
-    cid_encoding: dropped.cidEncoding,
-    missing_cid: dropped.missingCid,
-    record_filter: dropped.recordFilter,
-    unknown_actor: dropped.unknownActor,
-    unknown_subject: dropped.unknownSubject,
+  // Winner reads occur before db.batch on D1, so each projection carries the
+  // exact predecessor tokens it observed. A concurrent projector changes a
+  // token, the named transaction guard rolls everything back, and this loop
+  // repeats selection plus derived-state reads from fresh durable state.
+  const retryBase = {
+    unknownActor: dropped.unknownActor,
+    unknownSubject: dropped.unknownSubject,
     superseded: dropped.superseded,
   };
-  const diagnostics = options.aggregateDiagnostics || options.skipDiagnostics
-    ? null
-    : ingestDiagnosticsStatement(db, diagnosticCounts);
-  const trailingStatements = [
-    ...(diagnostics ? [diagnostics] : []),
-    ...(options.trailingStatements ?? []),
-  ];
-  if (projectionEvents.length > 0) {
-    const projectionOptions = {
-      ...options,
-      trailingStatements,
-      sourceOrderingChecked: true as const,
+  // An isolated projection owns its storage, version, and guard namespace.
+  // Admission and validation above stay canonical; only selection and the
+  // commit are delegated, so the public predecessor lookup is skipped.
+  const projection = options.projection;
+  const maximumAttempts = 5;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    const attemptDropped: IngestDropCounts = {
+      ...dropped,
+      unknownActor: retryBase.unknownActor,
+      unknownSubject: retryBase.unknownSubject,
+      superseded: retryBase.superseded,
     };
-    if (options.projection) {
-      await options.projection.project(
-        db,
-        projectionEvents,
-        config,
-        projectionOptions,
-      );
+    let predecessors: ReadonlyMap<string, RecordVersionInfo> | undefined;
+    let ordered: MutationSelection;
+    if (projection) {
+      ordered = options.authoritativeSourceObservation
+        ? selectAuthoritativeMutations(accepted)
+        : await projection.selectCurrent(db, accepted);
     } else {
-      await projectEvents(db, projectionEvents, config, projectionOptions);
+      predecessors = await lookupRecordVersions(
+        db,
+        accepted.map((event) => event.uri),
+      );
+      ordered = options.authoritativeSourceObservation
+        ? selectAuthoritativeMutations(accepted)
+        : selectMutationWinners(accepted, predecessors);
     }
-  } else if (trailingStatements.length > 0) {
-    await db.batch(trailingStatements);
-  }
-  // Aggregate only after the canonical projection/checkpoint transaction
-  // succeeds, so a rolled-back page cannot inflate private diagnostics.
-  if (options.aggregateDiagnostics) {
-    addIngestDiagnosticCounts(options.aggregateDiagnostics, diagnosticCounts);
+    attemptDropped.superseded += ordered.superseded;
+
+    const projectionExclusions = ordered.applied.filter((event) =>
+      policyExcluded.has(event),
+    );
+    const admitted = ordered.applied.filter(
+      (event) => !policyExcluded.has(event),
+    );
+
+    const effectiveKnownDids = options.knownDids
+      ? new Set(options.knownDids)
+      : undefined;
+    const discoveredDids: string[] = [];
+    if (effectiveKnownDids) {
+      for (const event of admitted) {
+        if (event.operation === "delete") continue;
+        const shortName = resolveCollectionKey(config, event.collection);
+        const collection = shortName ? config.collections[shortName] : undefined;
+        if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
+          continue;
+        }
+        effectiveKnownDids.add(event.did);
+        discoveredDids.push(event.did);
+      }
+    }
+
+    const actorFiltered: IngestEvent[] = [];
+    for (const event of admitted) {
+      if (event.operation === "delete" || !effectiveKnownDids) {
+        actorFiltered.push(event);
+        continue;
+      }
+      const shortName = resolveCollectionKey(config, event.collection);
+      const collection = shortName ? config.collections[shortName] : undefined;
+      if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
+        actorFiltered.push(event);
+        continue;
+      }
+      attemptDropped.unknownActor++;
+    }
+
+    const subjectFiltered = await filterUnknownSubjects(
+      db,
+      config,
+      actorFiltered,
+      effectiveKnownDids,
+      attemptDropped,
+    );
+    const projectionEvents = [...subjectFiltered, ...projectionExclusions];
+    const diagnosticCounts: IngestDiagnosticCounts = {
+      unknown_collection: attemptDropped.unknownCollection,
+      invalid_json: attemptDropped.invalidRecord,
+      lexicon_validation: attemptDropped.lexiconValidation,
+      cid_mismatch: attemptDropped.cidMismatch,
+      cid_encoding: attemptDropped.cidEncoding,
+      missing_cid: attemptDropped.missingCid,
+      record_filter: attemptDropped.recordFilter,
+      unknown_actor: attemptDropped.unknownActor,
+      unknown_subject: attemptDropped.unknownSubject,
+      superseded: attemptDropped.superseded,
+    };
+    // Private extensions keep operator-only diagnostics of their own, so an
+    // isolated batch never lands in the public ingest counters.
+    const diagnostics =
+      options.aggregateDiagnostics || options.skipDiagnostics
+        ? null
+        : ingestDiagnosticsStatement(db, diagnosticCounts);
+    const trailingStatements = [
+      ...(diagnostics ? [diagnostics] : []),
+      ...(options.trailingStatements ?? []),
+    ];
+
+    try {
+      if (projectionEvents.length > 0) {
+        const projectionOptions = {
+          ...options,
+          phase: options.phase ?? "live",
+          // A pre-fetched visible-row map is not safe after a conflict; the
+          // projector deliberately reloads it under this predecessor attempt.
+          existing: undefined,
+          trailingStatements,
+          sourceOrderingChecked: true as const,
+          predecessors,
+        };
+        if (projection) {
+          await projection.project(
+            db,
+            projectionEvents,
+            config,
+            projectionOptions,
+          );
+        } else {
+          await projectEvents(db, projectionEvents, config, projectionOptions);
+        }
+      } else if (trailingStatements.length > 0) {
+        await db.batch(trailingStatements);
+      }
+    } catch (error) {
+      if (isProjectionConflictError(error) && attempt < maximumAttempts) {
+        continue;
+      }
+      throw error;
+    }
+
+    Object.assign(dropped, attemptDropped);
+    // Aggregate only after the canonical projection/checkpoint transaction
+    // succeeds, so a rolled-back attempt cannot inflate private diagnostics.
+    if (options.aggregateDiagnostics) {
+      addIngestDiagnosticCounts(options.aggregateDiagnostics, diagnosticCounts);
+    }
+    return { accepted: subjectFiltered, dropped, discoveredDids };
   }
 
-  return { accepted: subjectFiltered, dropped, discoveredDids };
+  throw new Error("Projection conflict retry limit exhausted");
 }
 
 function incrementValidationDrop(

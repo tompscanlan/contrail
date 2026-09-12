@@ -21,7 +21,7 @@ import type { IngestProjection, IngestRecordsOptions } from "./ingest";
 import {
   compareRecordVersions,
   type MutationSelection,
-  type RecordVersionInfo,
+  type ComparableRecordVersion,
   type SortOption,
 } from "./db/records";
 import {
@@ -287,7 +287,7 @@ export async function initIsolatedProjection(
   }
 }
 
-function versionForEvent(event: IngestEvent): RecordVersionInfo {
+function versionForEvent(event: IngestEvent): ComparableRecordVersion {
   const source = event.source ?? {
     id: "legacy-caller",
     epoch: null,
@@ -315,9 +315,9 @@ async function isolatedVersions(
   db: Database,
   target: IsolatedProjectionTarget,
   uris: Iterable<string>,
-): Promise<Map<string, RecordVersionInfo>> {
+): Promise<Map<string, ComparableRecordVersion>> {
   const values = [...new Set(uris)];
-  const result = new Map<string, RecordVersionInfo>();
+  const result = new Map<string, ComparableRecordVersion>();
   for (let offset = 0; offset < values.length; offset += 40) {
     const chunk = values.slice(offset, offset + 40);
     const placeholders = chunk.map(() => "?").join(",");
@@ -330,7 +330,7 @@ async function isolatedVersions(
            AND uri IN (${placeholders})`,
       )
       .bind(target.scope.key, target.partition, target.generation, ...chunk)
-      .all<RecordVersionInfo>();
+      .all<ComparableRecordVersion>();
     for (const row of rows.results ?? []) result.set(row.uri, row);
   }
   return result;
@@ -338,11 +338,11 @@ async function isolatedVersions(
 
 function mutationWinners(
   events: IngestEvent[],
-  durable: ReadonlyMap<string, RecordVersionInfo>,
+  durable: ReadonlyMap<string, ComparableRecordVersion>,
 ): MutationSelection {
   const winners = new Map<string, {
     event: IngestEvent;
-    version: RecordVersionInfo;
+    version: ComparableRecordVersion;
     index: number;
   }>();
   let superseded = 0;

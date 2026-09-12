@@ -3,6 +3,8 @@ import type { ContrailConfig, Database } from "../types";
 import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../types";
 import { getLastCursor, getServingSourcePosition } from "../db";
 import { getBackfillStatus } from "../status";
+import { getRequiredChangeConsumerReadiness } from "../changes";
+import { isJetstreamTimestampCursor } from "../jetstream-live";
 
 export interface CursorStatus {
   cursor: number | null;
@@ -22,6 +24,9 @@ export async function getCursorStatus(db: Database): Promise<CursorStatus> {
     return { cursor: null, date: null, seconds_ago: null };
   }
 
+  if (!isJetstreamTimestampCursor(cursor)) {
+    return { cursor, date: null, seconds_ago: null };
+  }
   const dateMs = Math.floor(cursor / 1000);
   return {
     cursor,
@@ -48,9 +53,12 @@ export async function getStatusOverview(db: Database, config: ContrailConfig) {
     }
   }
 
-  const [ingestion, backfill] = await Promise.all([
+  const [ingestion, backfill, requiredDelivery] = await Promise.all([
     getCursorStatus(db),
     getBackfillStatus(db, config),
+    config.changes && Object.keys(config.changes.consumers).length > 0
+      ? getRequiredChangeConsumerReadiness(db)
+      : Promise.resolve({ ready: true, through: "0", pending: [] }),
   ]);
 
   return {
@@ -59,6 +67,11 @@ export async function getStatusOverview(db: Database, config: ContrailConfig) {
     collections,
     ingestion,
     backfill,
+    delivery: {
+      required: requiredDelivery.ready ? "ready" as const : "catching_up" as const,
+      pending: requiredDelivery.pending.length,
+      through: requiredDelivery.through,
+    },
   };
 }
 
@@ -71,13 +84,9 @@ export function registerCursorRoute(
 
   app.get(`/xrpc/${ns}.getCursor`, async (c) => {
     if (!config.orderedSource) {
-      const legacy = await getCursorStatus(db);
-      if (legacy.cursor === null) return c.json({});
-      return c.json({
-        time_us: legacy.cursor,
-        date: legacy.date,
-        seconds_ago: legacy.seconds_ago,
-      });
+      const current = await getCursorStatus(db);
+      if (current.cursor === null) return c.json({});
+      return c.json({ cursor: current.cursor });
     }
 
     const current = await getServingSourcePosition(db);

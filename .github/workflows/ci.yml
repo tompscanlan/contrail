@@ -32,7 +32,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.14
+          node-version: 22.15
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -46,6 +46,9 @@ jobs:
 
       - name: Test published adapters
         run: pnpm test:built
+
+      - name: Test built Worker in workerd
+        run: pnpm test:workerd
 
       - name: Test
         run: pnpm test
