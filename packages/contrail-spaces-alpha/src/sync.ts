@@ -30,6 +30,7 @@ import {
   type ProtocolOptions,
   type RepoOp,
   type SignedCommitInput,
+  type SpacePolicyDescription,
 } from "./protocol";
 import {
   acquireSyncLease,
@@ -53,11 +54,21 @@ import { formatSpaceRecordUri, parseSpaceUri, spaceProjectionKey } from "./uri";
 
 export type SpaceUserPolicy = "public" | "member-list" | "managing-app";
 
+const SPACE_POLICY_TYPES: Record<SpaceUserPolicy, string> = {
+  public: "com.atproto.simplespace.defs#publicPolicy",
+  "member-list": "com.atproto.simplespace.defs#memberListPolicy",
+  "managing-app": "com.atproto.simplespace.defs#managingAppPolicy",
+};
+
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
-  /** User policy asserted against the authority PDS description. */
-  policy: SpaceUserPolicy;
+  /** Read policy asserted against the authority PDS description: who the
+   * authority lets read the space. */
+  readPolicy: SpaceUserPolicy;
+  /** Write policy asserted against the authority PDS description: whose
+   * independent writes the authority tracks into the space writer set. */
+  writePolicy: SpaceUserPolicy;
 }
 
 export interface SpacesSyncBudget {
@@ -213,24 +224,36 @@ export class SpacesSyncEngine {
     if (description.uri !== watch.spaceUri) {
       throw new Error("Space authority returned a different URI");
     }
-    const expectedPolicy = type.policy;
-    const expectedPolicyType = {
-      public: "com.atproto.simplespace.defs#publicPolicy",
-      "member-list": "com.atproto.simplespace.defs#memberListPolicy",
-      "managing-app": "com.atproto.simplespace.defs#managingAppPolicy",
-    }[expectedPolicy];
-    if (description.policy?.$type !== expectedPolicyType) {
-      throw new Error(`Space does not use the configured ${expectedPolicy} policy`);
-    }
-    if (expectedPolicy === "managing-app" &&
-      description.policy.managingApp !== this.config.serviceAudience) {
-      throw new Error("Space is managed by a different application");
-    }
+    this.assertPolicy("read", type.readPolicy, description.readPolicy);
+    this.assertPolicy("write", type.writePolicy, description.writePolicy);
     if (
       description.appAccess?.$type !== undefined &&
       description.appAccess.$type !== "com.atproto.simplespace.defs#open"
     ) {
       throw new Error("The first Spaces-alpha provider supports only open appAccess");
+    }
+  }
+
+  /** The two policies are asserted independently: a space whose reads still
+   * match the configuration but whose writes were widened is a divergence the
+   * syncer must name precisely. */
+  private assertPolicy(
+    access: "read" | "write",
+    expected: SpaceUserPolicy,
+    described: SpacePolicyDescription | undefined,
+  ): void {
+    if (described?.$type !== SPACE_POLICY_TYPES[expected]) {
+      throw new Error(
+        `Space ${access} policy is not the configured ${expected} policy`,
+      );
+    }
+    if (
+      expected === "managing-app" &&
+      described.managingApp !== this.config.serviceAudience
+    ) {
+      throw new Error(
+        `Space ${access} policy names a different managing application`,
+      );
     }
   }
 

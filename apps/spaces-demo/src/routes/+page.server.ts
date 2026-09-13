@@ -1,11 +1,11 @@
 import { fail, redirect } from "@sveltejs/kit";
 import {
-  addSimpleSpaceMember,
   createSpace,
   createSpaceRecord,
   formatSpaceUri,
   getDelegationToken,
   listSimpleSpaceMembers,
+  putSimpleSpaceMember,
   removeSimpleSpaceMember,
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
 import {
@@ -186,7 +186,8 @@ export const actions: Actions = {
       const created = await createSpace(session, {
         type: SPACE_TYPE,
         skey: SPACE_SKEY,
-        policy: { kind: "member-list" },
+        readPolicy: { kind: "member-list" },
+        writePolicy: { kind: "member-list" },
       });
       await spacesRuntime(platform).authorizeSpace({
         userDid: did,
@@ -232,7 +233,12 @@ export const actions: Actions = {
     try {
       const member = await resolveMember(form.get("member"));
       if (member.did === owner) throw new Error("The owner already has access");
-      await addSimpleSpaceMember(session, circleUri(owner), member.did);
+      // A circle member both reads the circle and writes their own notes.
+      await putSimpleSpaceMember(session, circleUri(owner), {
+        did: member.did,
+        read: true,
+        write: true,
+      });
     } catch (error) {
       return fail(400, {
         action: "addMember",

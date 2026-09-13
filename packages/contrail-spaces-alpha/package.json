@@ -28,11 +28,11 @@
   },
   "dependencies": {
     "@atmo-dev/contrail": "workspace:*",
-    "@atproto/common-web": "0.0.0-spaces-alpha-20260818163953",
-    "@atproto/identity": "0.0.0-spaces-alpha-20260818163953",
+    "@atproto/common-web": "0.0.0-spaces-alpha-20260913191958",
+    "@atproto/identity": "0.0.0-spaces-alpha-20260913191958",
     "@atproto/jwk-jose": "0.2.4",
-    "@atproto/lex-data": "0.1.7",
-    "@atproto/space": "0.0.0-spaces-alpha-20260818163953"
+    "@atproto/lex-data": "0.0.0-spaces-alpha-20260913191958",
+    "@atproto/space": "0.0.0-spaces-alpha-20260913191958"
   },
   "devDependencies": {
     "@atcute/crypto": "2.4.4",

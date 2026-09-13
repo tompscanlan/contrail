@@ -5,7 +5,7 @@ import {
   type DidDocument,
 } from "@atproto/common-web";
 import { JoseKey } from "@atproto/jwk-jose";
-import { createDpopProof } from "@atproto/space";
+import { createDpopProof, type RecordPathParts } from "@atproto/space";
 import { validateExternalUrl } from "@atmo-dev/contrail";
 import { parseSpaceUri } from "./uri";
 
@@ -300,9 +300,18 @@ async function credentialProcedure<T>(
   }));
 }
 
+export interface SpacePolicyDescription {
+  $type?: string;
+  managingApp?: string;
+  [key: string]: unknown;
+}
+
 export interface SpaceDescription {
   uri: string;
-  policy: { $type?: string; managingApp?: string; [key: string]: unknown };
+  /** Who the authority lets read the space. */
+  readPolicy: SpacePolicyDescription;
+  /** Whose independent writes the authority tracks and forwards. */
+  writePolicy: SpacePolicyDescription;
   appAccess: { $type?: string; [key: string]: unknown };
 }
 
@@ -335,10 +344,10 @@ export function listRepos(
   return credentialQuery(transport, authorityPds, "com.atproto.space.listRepos", input);
 }
 
-export interface RepoOp {
+/** The record path is typed as the Space library types it, so an operation
+ * read off the wire feeds `RepoCommit.applyOp` without a cast. */
+export interface RepoOp extends RecordPathParts {
   rev: string;
-  collection: string;
-  rkey: string;
   cid: string | null;
   prev: string | null;
   value?: unknown;

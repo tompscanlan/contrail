@@ -15,6 +15,8 @@ export {
 } from "./worker";
 export type {
   SpaceAuthorizationInput,
+  SpaceReadAuthorizationInput,
+  SpaceWriteAuthorizationInput,
   SpacesWorkerEnv,
   SpacesWorkerOptions,
 } from "./worker";

@@ -58,7 +58,8 @@ export const spaces = createSpacesWorker<SpacesDemoEnv>({
   spaceTypes: {
     [SPACE_TYPE]: {
       collections: [NOTE_COLLECTION, REACTION_COLLECTION],
-      policy: "member-list",
+      readPolicy: "member-list",
+      writePolicy: "member-list",
       skey: SPACE_SKEY,
     },
   },

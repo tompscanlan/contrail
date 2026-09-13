@@ -142,13 +142,17 @@ export function createSpace(
   input: {
     type: string;
     skey?: string;
-    policy: SimpleSpacePolicyInput;
+    /** Who the authority lets read the space. */
+    readPolicy: SimpleSpacePolicyInput;
+    /** Whose independent writes the authority tracks and forwards. */
+    writePolicy: SimpleSpacePolicyInput;
   },
 ): Promise<{ uri: string }> {
   return pdsProcedure(session, "com.atproto.simplespace.createSpace", {
     type: input.type,
     ...(input.skey ? { skey: input.skey } : {}),
-    policy: simpleSpacePolicy(input.policy),
+    readPolicy: simpleSpacePolicy(input.readPolicy),
+    writePolicy: simpleSpacePolicy(input.writePolicy),
     appAccess: { $type: "com.atproto.simplespace.defs#open" },
   });
 }
@@ -158,32 +162,54 @@ export function getSimpleSpace(
   space: string,
 ): Promise<{
   uri: string;
-  policy?: { $type?: string; managingApp?: string };
+  readPolicy?: { $type?: string; managingApp?: string };
+  writePolicy?: { $type?: string; managingApp?: string };
   appAccess?: { $type?: string };
 }> {
   parseSpaceUri(space);
   return pdsQuery(session, "com.atproto.simplespace.getSpace", { space });
 }
 
-export function updateSimpleSpacePolicy(
+/** Replace either policy wholesale. An omitted policy is left unchanged, so a
+ * caller that means to change only reads cannot silently reset writes. */
+export function updateSimpleSpacePolicies(
   session: AuthenticatedPdsSession,
   space: string,
-  policy: SimpleSpacePolicyInput,
+  policies: {
+    readPolicy?: SimpleSpacePolicyInput;
+    writePolicy?: SimpleSpacePolicyInput;
+  },
 ): Promise<Record<string, never>> {
   parseSpaceUri(space);
+  if (!policies.readPolicy && !policies.writePolicy) {
+    throw new TypeError("updateSimpleSpacePolicies requires readPolicy, writePolicy, or both");
+  }
   return pdsProcedure(session, "com.atproto.simplespace.updateSpace", {
     space,
-    policy: simpleSpacePolicy(policy),
+    ...(policies.readPolicy
+      ? { readPolicy: simpleSpacePolicy(policies.readPolicy) }
+      : {}),
+    ...(policies.writePolicy
+      ? { writePolicy: simpleSpacePolicy(policies.writePolicy) }
+      : {}),
   });
 }
 
-export function addSimpleSpaceMember(
+/** Add a member to the space's member list, or replace their access. Both
+ * flags are required: the member-list read policy and the member-list write
+ * policy consult them independently. */
+export function putSimpleSpaceMember(
   session: AuthenticatedPdsSession,
   space: string,
-  did: string,
+  member: { did: string; read: boolean; write: boolean },
 ): Promise<Record<string, never>> {
   parseSpaceUri(space);
-  return pdsProcedure(session, "com.atproto.simplespace.addMember", { space, did });
+  return pdsProcedure(session, "com.atproto.simplespace.putMember", {
+    space,
+    did: member.did,
+    read: member.read,
+    write: member.write,
+  });
 }
 
 export function removeSimpleSpaceMember(
@@ -198,7 +224,10 @@ export function removeSimpleSpaceMember(
 export function listSimpleSpaceMembers(
   session: AuthenticatedPdsSession,
   input: { space: string; cursor?: string; limit?: number },
-): Promise<{ members: Array<{ did: string }>; cursor?: string }> {
+): Promise<{
+  members: Array<{ did: string; read: boolean; write: boolean }>;
+  cursor?: string;
+}> {
   parseSpaceUri(input.space);
   return pdsQuery(session, "com.atproto.simplespace.listMembers", {
     space: input.space,

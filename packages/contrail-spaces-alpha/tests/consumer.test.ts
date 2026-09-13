@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  addSimpleSpaceMember,
   createSpace,
   formatSpacePermissionScope,
   listSimpleSpaceMembers,
+  putSimpleSpaceMember,
   removeSimpleSpaceMember,
   spacesConsumerOAuthScopes,
   spacesIntegratedOAuthScopes,
-  updateSimpleSpacePolicy,
+  updateSimpleSpacePolicies,
   type AuthenticatedPdsSession,
 } from "../src/consumer";
 
@@ -52,7 +52,9 @@ describe("consumer scopes", () => {
           body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
         });
         if (path.includes("listMembers")) {
-          return Response.json({ members: [{ did: "did:plc:bob" }] });
+          return Response.json({
+            members: [{ did: "did:plc:bob", read: true, write: false }],
+          });
         }
         return Response.json(path.includes("createSpace")
           ? { uri: "at://did:plc:alice/space/garden.atmo.circle/self" }
@@ -63,21 +65,43 @@ describe("consumer scopes", () => {
     await createSpace(session, {
       type: "garden.atmo.circle",
       skey: "self",
-      policy: { kind: "member-list" },
+      readPolicy: { kind: "member-list" },
+      writePolicy: { kind: "managing-app", managingApp: "did:web:provider.test#spaces" },
     });
-    await addSimpleSpaceMember(session, space, "did:plc:bob");
+    await putSimpleSpaceMember(session, space, {
+      did: "did:plc:bob",
+      read: true,
+      write: false,
+    });
     expect((await listSimpleSpaceMembers(session, { space })).members).toEqual([
-      { did: "did:plc:bob" },
+      { did: "did:plc:bob", read: true, write: false },
     ]);
     await removeSimpleSpaceMember(session, space, "did:plc:bob");
-    await updateSimpleSpacePolicy(session, space, { kind: "member-list" });
+    await updateSimpleSpacePolicies(session, space, {
+      writePolicy: { kind: "member-list" },
+    });
 
-    expect(calls[0].body?.policy).toEqual({
-      $type: "com.atproto.simplespace.defs#memberListPolicy",
+    expect(calls[0].body).toMatchObject({
+      readPolicy: { $type: "com.atproto.simplespace.defs#memberListPolicy" },
+      writePolicy: {
+        $type: "com.atproto.simplespace.defs#managingAppPolicy",
+        managingApp: "did:web:provider.test#spaces",
+      },
+    });
+    expect(calls[1].body).toEqual({
+      space,
+      did: "did:plc:bob",
+      read: true,
+      write: false,
+    });
+    // An omitted policy is left alone rather than reset to the other one.
+    expect(calls[4].body).toEqual({
+      space,
+      writePolicy: { $type: "com.atproto.simplespace.defs#memberListPolicy" },
     });
     expect(calls.map((call) => call.path)).toEqual([
       "/xrpc/com.atproto.simplespace.createSpace",
-      "/xrpc/com.atproto.simplespace.addMember",
+      "/xrpc/com.atproto.simplespace.putMember",
       `/xrpc/com.atproto.simplespace.listMembers?space=${encodeURIComponent(space)}`,
       "/xrpc/com.atproto.simplespace.removeMember",
       "/xrpc/com.atproto.simplespace.updateSpace",

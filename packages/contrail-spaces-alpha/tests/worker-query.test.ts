@@ -124,7 +124,8 @@ describe("Spaces Worker private query boundary", () => {
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
-          policy: "managing-app",
+          readPolicy: "managing-app",
+          writePolicy: "member-list",
           skey: "self",
         },
       },
@@ -207,7 +208,8 @@ describe("Spaces Worker private query boundary", () => {
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
-          policy: "member-list",
+          readPolicy: "member-list",
+          writePolicy: "member-list",
         },
       },
     });
@@ -224,7 +226,7 @@ describe("Spaces Worker private query boundary", () => {
     expect(removed.status).toBe(404);
   });
 
-  it("requires an application authorizer only for managing-app policies", () => {
+  it("requires a policy-specific authorizer for each managing-app policy", () => {
     const base = {
       projection,
       lexicons,
@@ -239,24 +241,198 @@ describe("Spaces Worker private query boundary", () => {
         // @ts-expect-error Policies must also be explicit at the type boundary.
         "garden.atmo.circle": { collections: [collection] },
       },
-    })).toThrow(/explicit supported policy/);
+    })).toThrow(/explicit supported read policy/);
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        // @ts-expect-error The write policy is required alongside the read policy.
+        "garden.atmo.circle": { collections: [collection], readPolicy: "public" },
+      },
+    })).toThrow(/explicit supported write policy/);
     expect(() => createSpacesWorker({
       ...base,
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
-          policy: "managing-app",
+          readPolicy: "managing-app",
+          writePolicy: "member-list",
         },
       },
-    })).toThrow(/Managing-app/);
+    })).toThrow(/Managing-app read policies/);
     expect(() => createSpacesWorker({
       ...base,
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
-          policy: "member-list",
+          readPolicy: "public",
+          writePolicy: "managing-app",
+        },
+      },
+    })).toThrow(/writeAuthorization/);
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "public",
+          writePolicy: "managing-app",
+        },
+      },
+      writeAuthorization: { authorizeWrite: () => false },
+    })).not.toThrow();
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "member-list",
+          writePolicy: "member-list",
         },
       },
     })).not.toThrow();
+  });
+
+  it("answers checkUserAccess writes from the write authorizer alone", async () => {
+    const db = createSqliteDatabase(":memory:");
+    bindRecordValidationLexicons(projection, lexicons);
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: space });
+    const writeChecks: Array<{ userDid: string; action: string }> = [];
+    const readChecks: string[] = [];
+    const worker = createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+        resolver: {
+          async resolve(did) {
+            return {
+              "@context": [],
+              id: did,
+              verificationMethod: [{
+                id: `${did}#atproto`,
+                type: "Multikey",
+                controller: did,
+                publicKeyMultibase: await keypair.exportPublicKey("multikey"),
+              }],
+            };
+          },
+        },
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "managing-app",
+          writePolicy: "managing-app",
+          skey: "self",
+        },
+      },
+      authorization: {
+        authorize: (input) => {
+          readChecks.push(input.userDid);
+          return true;
+        },
+      },
+      writeAuthorization: {
+        authorizeWrite: (input) => {
+          writeChecks.push({ userDid: input.userDid, action: input.action });
+          return input.userDid === "did:plc:writer";
+        },
+      },
+    });
+    const env = {
+      DB: db,
+      SPACES_CREDENTIAL_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    } as never;
+    const method = "com.atproto.simplespace.checkUserAccess";
+    const check = async (user: string, access?: string) => {
+      const params = new URLSearchParams({ space, user });
+      if (access) params.set("access", access);
+      return worker.fetch!(new Request(
+        `https://spaces.atmo.garden/xrpc/${method}?${params}`,
+        { headers: { authorization: `Bearer ${await token(method)}` } },
+      ) as never, env, context());
+    };
+
+    const admitted = await check("did:plc:writer", "write");
+    expect(admitted.status).toBe(200);
+    expect(await admitted.json()).toEqual({ authorized: true });
+
+    const refused = await check("did:plc:reader", "write");
+    expect(await refused.json()).toEqual({ authorized: false });
+
+    // Reads never reach the write authorizer, and writes never reach the read
+    // authorizer: a reader authorized for the space is not thereby a writer.
+    expect(writeChecks).toEqual([
+      { userDid: "did:plc:writer", action: "write" },
+      { userDid: "did:plc:reader", action: "write" },
+    ]);
+    expect(readChecks).toEqual([]);
+
+    const read = await check("did:plc:reader", "read");
+    expect(await read.json()).toEqual({ authorized: true });
+    expect(readChecks).toEqual(["did:plc:reader"]);
+    expect(writeChecks).toHaveLength(2);
+
+    const unspecified = await check("did:plc:reader");
+    expect(unspecified.status).toBe(400);
+  });
+
+  it("denies a write check for a space type Contrail does not manage writes for", async () => {
+    const db = createSqliteDatabase(":memory:");
+    bindRecordValidationLexicons(projection, lexicons);
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: space });
+    const readChecks: string[] = [];
+    const worker = createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+        resolver: {
+          async resolve(did) {
+            return {
+              "@context": [],
+              id: did,
+              verificationMethod: [{
+                id: `${did}#atproto`,
+                type: "Multikey",
+                controller: did,
+                publicKeyMultibase: await keypair.exportPublicKey("multikey"),
+              }],
+            };
+          },
+        },
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "managing-app",
+          // The authority holds the write decision; Contrail is not configured
+          // to answer it, so a live space that diverged must not slip through.
+          writePolicy: "member-list",
+          skey: "self",
+        },
+      },
+      authorization: {
+        authorize: (input) => {
+          readChecks.push(input.userDid);
+          return true;
+        },
+      },
+    });
+    const method = "com.atproto.simplespace.checkUserAccess";
+    const params = new URLSearchParams({ space, user: "did:plc:reader", access: "write" });
+    const response = await worker.fetch!(new Request(
+      `https://spaces.atmo.garden/xrpc/${method}?${params}`,
+      { headers: { authorization: `Bearer ${await token(method)}` } },
+    ) as never, {
+      DB: db,
+      SPACES_CREDENTIAL_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    } as never, context());
+    expect(await response.json()).toEqual({ authorized: false });
+    expect(readChecks).toEqual([]);
   });
 });

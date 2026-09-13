@@ -16,6 +16,7 @@ import {
   DEFAULT_SPACES_SYNC_BUDGET,
   resolveSpacesSyncBudget,
   SpacesSyncEngine,
+  type SpaceUserPolicy,
 } from "../src/sync";
 import {
   getRepoState,
@@ -26,6 +27,7 @@ import {
 import { spaceProjectionKey } from "../src/uri";
 
 const SPACE = "at://did:plc:alice/space/garden.atmo.circle/self";
+const AUDIENCE = "did:web:provider.test#spaces";
 const WRITER = "did:plc:bob";
 const COLLECTION = "garden.atmo.circle.note";
 const EXCLUDED_COLLECTION = "garden.atmo.circle.rsvp";
@@ -112,10 +114,11 @@ async function engineFor(
     spaceTypes: {
       "garden.atmo.circle": {
         collections: [COLLECTION],
-        policy: "member-list",
+        readPolicy: "member-list",
+        writePolicy: "member-list",
       },
     },
-    serviceAudience: "did:web:provider.test#spaces",
+    serviceAudience: AUDIENCE,
     credentialEncryptionKey: "unused-in-direct-test",
     syncBudget,
   });
@@ -135,6 +138,83 @@ async function signingKey() {
     },
   };
 }
+
+function validationEngine(writePolicy: SpaceUserPolicy): SpacesSyncEngine {
+  const engine = new SpacesSyncEngine(createSqliteDatabase(":memory:"), {
+    projection,
+    spaceTypes: {
+      "garden.atmo.circle": {
+        collections: [COLLECTION],
+        readPolicy: "member-list",
+        writePolicy,
+      },
+    },
+    serviceAudience: AUDIENCE,
+    credentialEncryptionKey: "unused-in-direct-test",
+  });
+  vi.spyOn(engine.identities, "resolvePds").mockResolvedValue("https://authority.test");
+  return engine;
+}
+
+function describedSpace(policies: {
+  read: Record<string, unknown>;
+  write: Record<string, unknown>;
+}): SpaceCredentialTransport {
+  return transportFor(() => Response.json({
+    uri: SPACE,
+    readPolicy: policies.read,
+    writePolicy: policies.write,
+    appAccess: { $type: "com.atproto.simplespace.defs#open" },
+  }));
+}
+
+describe("Space policy validation", () => {
+  const memberList = { $type: "com.atproto.simplespace.defs#memberListPolicy" };
+  const managingApp = {
+    $type: "com.atproto.simplespace.defs#managingAppPolicy",
+    managingApp: AUDIENCE,
+  };
+
+  it("accepts a space whose read and write policies both match", async () => {
+    await expect(validationEngine("managing-app").validateWatch(
+      watch(),
+      describedSpace({ read: memberList, write: managingApp }),
+    )).resolves.toBeUndefined();
+  });
+
+  it("names the write side when only writes diverge", async () => {
+    await expect(validationEngine("managing-app").validateWatch(
+      watch(),
+      describedSpace({
+        read: memberList,
+        write: { $type: "com.atproto.simplespace.defs#publicPolicy" },
+      }),
+    )).rejects.toThrow("Space write policy is not the configured managing-app policy");
+  });
+
+  it("names the read side when only reads diverge", async () => {
+    await expect(validationEngine("member-list").validateWatch(
+      watch(),
+      describedSpace({
+        read: { $type: "com.atproto.simplespace.defs#publicPolicy" },
+        write: memberList,
+      }),
+    )).rejects.toThrow("Space read policy is not the configured member-list policy");
+  });
+
+  it("rejects a write policy managed by another application", async () => {
+    await expect(validationEngine("managing-app").validateWatch(
+      watch(),
+      describedSpace({
+        read: memberList,
+        write: {
+          $type: "com.atproto.simplespace.defs#managingAppPolicy",
+          managingApp: "did:web:elsewhere.test#spaces",
+        },
+      }),
+    )).rejects.toThrow("Space write policy names a different managing application");
+  });
+});
 
 describe("Spaces incremental synchronization", () => {
   it("projects an update without recovering when its superseded create has no value", async () => {

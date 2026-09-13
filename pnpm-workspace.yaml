@@ -2,6 +2,15 @@ packages:
   - packages/*
   - apps/*
 
+# The spaces alphas carry caret ranges on 0.0.0-spaces-alpha-* prereleases, and
+# a bare 0.0.0 of these three packages is published with unresolvable
+# `workspace:*` dependencies. Bare 0.0.0 outranks every prerelease, so an
+# unpinned resolve picks it and dies with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
+overrides:
+  '@atproto/lex-data': 0.0.0-spaces-alpha-20260913191958
+  '@atproto/lex-cbor': 0.0.0-spaces-alpha-20260913191958
+  '@atproto/lex-json': 0.0.0-spaces-alpha-20260913191958
+
 onlyBuiltDependencies:
   - esbuild
   - sharp

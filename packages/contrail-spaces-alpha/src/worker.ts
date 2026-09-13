@@ -42,12 +42,27 @@ export const LIST_SPACES_METHOD = "listSpaces";
 export const LIST_SPACE_RECORDS_METHOD = "listSpaceRecords";
 export const GET_SPACE_RECORD_METHOD = "getSpaceRecord";
 
-export interface SpaceAuthorizationInput {
+interface SpaceAuthorizationRequest {
   userDid: string;
   spaceUri: string;
-  action: "read" | "write";
   method: string;
 }
+
+/** A read check: may this user hold a credential for the space? */
+export interface SpaceReadAuthorizationInput extends SpaceAuthorizationRequest {
+  action: "read";
+}
+
+/** A write check: should the authority admit this user's own repo to the
+ * space's writer set? Asked once per user by the authority PDS, not once per
+ * record, and never carries a client attestation. */
+export interface SpaceWriteAuthorizationInput extends SpaceAuthorizationRequest {
+  action: "write";
+}
+
+export type SpaceAuthorizationInput =
+  | SpaceReadAuthorizationInput
+  | SpaceWriteAuthorizationInput;
 
 export interface SpacesWorkerEnv {
   [key: string]: unknown;
@@ -132,9 +147,12 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
     credentialEncryptionKey?: string;
     queue?: string;
   };
+  /** Answers the read side of `com.atproto.simplespace.checkUserAccess`: may
+   * this user hold a credential for the space? Required by space types whose
+   * `readPolicy` is `managing-app`. */
   authorization?: {
     authorize(
-      input: SpaceAuthorizationInput,
+      input: SpaceReadAuthorizationInput,
       context: { env: Env; db: Database },
     ): boolean | Promise<boolean>;
     /** Optional inverse lookup for custom managing-app policies. Native PDS
@@ -143,6 +161,18 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
       userDid: string,
       context: { env: Env; db: Database },
     ): readonly string[] | Promise<readonly string[]>;
+  };
+  /** Answers the write side of `com.atproto.simplespace.checkUserAccess`: the
+   * single place an application decides whose independent writes the authority
+   * admits to the space writer set. Required by space types whose
+   * `writePolicy` is `managing-app`; every write is denied without it, because
+   * who may write into a managed space is the application's product decision
+   * and Contrail will not guess it from read access. */
+  writeAuthorization?: {
+    authorizeWrite(
+      input: SpaceWriteAuthorizationInput,
+      context: { env: Env; db: Database },
+    ): boolean | Promise<boolean>;
   };
   accessLeaseMs?: number;
   reconcileIntervalMs?: number;
@@ -612,17 +642,37 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   }
   bindRecordValidationLexicons(projection, options.lexicons);
   prepareRecordValidation(projection);
-  const supportedPolicies = new Set(["public", "member-list", "managing-app"]);
+  const supportedPolicies: Record<string, true> = {
+    public: true,
+    "member-list": true,
+    "managing-app": true,
+  };
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
-    if (!supportedPolicies.has(type.policy)) {
-      throw new TypeError(`Space type ${spaceType} requires an explicit supported policy`);
+    if (!supportedPolicies[type.readPolicy]) {
+      throw new TypeError(
+        `Space type ${spaceType} requires an explicit supported read policy`,
+      );
+    }
+    if (!supportedPolicies[type.writePolicy]) {
+      throw new TypeError(
+        `Space type ${spaceType} requires an explicit supported write policy`,
+      );
     }
   }
-  const managingAppEnabled = Object.values(options.spaceTypes).some(
-    (type) => type.policy === "managing-app",
+  const managingAppReads = Object.values(options.spaceTypes).some(
+    (type) => type.readPolicy === "managing-app",
   );
-  if (managingAppEnabled && !options.authorization) {
-    throw new TypeError("Managing-app Space types require an authoritative authorizer");
+  const managingAppWrites = Object.values(options.spaceTypes).some(
+    (type) => type.writePolicy === "managing-app",
+  );
+  const managingAppEnabled = managingAppReads || managingAppWrites;
+  if (managingAppReads && !options.authorization) {
+    throw new TypeError("Managing-app read policies require an authoritative authorizer");
+  }
+  if (managingAppWrites && !options.writeAuthorization) {
+    throw new TypeError(
+      "Managing-app write policies require options.writeAuthorization.authorizeWrite",
+    );
   }
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
     for (const nsid of type.collections) {
@@ -751,6 +801,34 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     else ctx.waitUntil(fallback());
   };
 
+  /** The one place Contrail answers "should this user's writes be admitted?".
+   * A read lease says nothing about writes, so it is never consulted here, and
+   * an application that has not configured `writeAuthorization` denies. */
+  const writeAllowed = async (
+    env: Env,
+    db: Database,
+    spaceType: string,
+    input: SpaceWriteAuthorizationInput,
+  ): Promise<boolean> => {
+    const writePolicy = options.spaceTypes[spaceType]?.writePolicy;
+    if (writePolicy !== "managing-app") {
+      console.warn(
+        `[spaces] denied write for ${input.userDid} in ${input.spaceUri}: ` +
+          `configured write policy for ${spaceType} is ${writePolicy ?? "unknown"}, ` +
+          "so this authority should not be asking the managing app",
+      );
+      return false;
+    }
+    if (!options.writeAuthorization) {
+      console.warn(
+        `[spaces] denied write for ${input.userDid} in ${input.spaceUri}: ` +
+          "no writeAuthorization.authorizeWrite is configured",
+      );
+      return false;
+    }
+    return options.writeAuthorization.authorizeWrite(input, { env, db });
+  };
+
   const accessAllowed = async (
     env: Env,
     db: Database,
@@ -758,9 +836,12 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     input: SpaceAuthorizationInput,
   ): Promise<boolean> => {
     if (input.userDid === watch.authorityDid) return true;
-    const policy = options.spaceTypes[watch.spaceType]?.policy;
-    if (!policy) return false;
-    if (policy === "managing-app") {
+    if (input.action === "write") {
+      return writeAllowed(env, db, watch.spaceType, input);
+    }
+    const readPolicy = options.spaceTypes[watch.spaceType]?.readPolicy;
+    if (!readPolicy) return false;
+    if (readPolicy === "managing-app") {
       return options.authorization!.authorize(input, { env, db });
     }
     return hasAccessLease(db, {
@@ -1246,26 +1327,41 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       if (verified.response) return verified.response;
       const parsed = parseSpaceUri(url.searchParams.get("space"));
       const userDid = url.searchParams.get("user");
+      const access = url.searchParams.get("access");
       if (!userDid) return json({ error: "InvalidRequest" }, 400);
+      if (access !== "read" && access !== "write") {
+        return json({ error: "InvalidRequest", message: "access must be read or write" }, 400);
+      }
       if (verified.did !== parsed.authorityDid) return json({ error: "InvalidIssuer" }, 403);
-      const watch = await getSpaceWatch(db, parsed.uri);
       let authorized = userDid === parsed.authorityDid;
-      if (!authorized && watch?.status === "active") {
-        authorized = await accessAllowed(env, db, watch, {
+      if (!authorized && access === "write") {
+        // Writes never consult a watch: the authority is asking whether to
+        // start tracking this user's repo, which may precede any sync.
+        authorized = await writeAllowed(env, db, parsed.type, {
           userDid,
           spaceUri: parsed.uri,
-          action: "read",
+          action: "write",
           method,
         });
-      } else if (!authorized && options.authorization) {
-        // A custom policy may authorize before the first watch, or for a
-        // verified recreation while the old generation remains hidden.
-        authorized = await options.authorization.authorize({
-          userDid,
-          spaceUri: parsed.uri,
-          action: "read",
-          method,
-        }, { env, db });
+      } else if (!authorized) {
+        const watch = await getSpaceWatch(db, parsed.uri);
+        if (watch?.status === "active") {
+          authorized = await accessAllowed(env, db, watch, {
+            userDid,
+            spaceUri: parsed.uri,
+            action: "read",
+            method,
+          });
+        } else if (options.authorization) {
+          // A custom policy may authorize before the first watch, or for a
+          // verified recreation while the old generation remains hidden.
+          authorized = await options.authorization.authorize({
+            userDid,
+            spaceUri: parsed.uri,
+            action: "read",
+            method,
+          }, { env, db });
+        }
       }
       return json({ authorized });
     }
