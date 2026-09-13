@@ -1,5 +1,65 @@
 # @atmo-dev/contrail
 
+## 0.23.0
+
+### Minor Changes
+
+- e050b0b: Add verified Lexicon-prefix initialization with CID-pinned dependency bundles, automatic safe query fields, and optional reference/relation prompts.
+
+## 0.22.1
+
+### Patch Changes
+
+- 825aa85: Keep optional CPU telemetry and Jetstream v2 cursor preflights compatible with Cloudflare Workers. Exposed but unimplemented `process.cpuUsage` methods now degrade to `null`, and cursor probes use a receiver-safe fetch call with fail-closed manual redirect handling.
+
+## 0.22.0
+
+### Minor Changes
+
+- b851583: Switch scheduled and persistent live ingestion to Jetstream v2 using the official `@bsky/jetstream` client. Live cursors now use instance-local sequence numbers, one normalized v2 service is durably pinned to each generation, legacy timestamp cursors transition atomically into the seq domain, and existing PDS/Alluvium historical acquisition remains unchanged. Alluvium bootstrap now has a separate `sourceUrl`/`--alluvium-source-url` for its legacy v1 manifest identity. Unscoped `getCursor` responses now return `{ cursor }`; ordered-source responses retain their opaque `{ source, epoch, cursor }` position. The minimum supported Node.js version is now 22.15.
+
+### Patch Changes
+
+- 28f94c9: Allow config-backed `contrail dev` and `contrail connect` to continue after confirmation when configured Lexicons cannot yet be resolved, omitting incomplete schema closures and generating untyped values for affected records.
+
+## 0.21.2
+
+### Patch Changes
+
+- 60e7b3a: Run Atcute's Lexicon CLI with an explicit module redirect for its byte-array helper so `contrail dev` works with pnpm's strictly isolated global package links.
+
+## 0.21.1
+
+### Patch Changes
+
+- de3f48a: Declare the byte-array helper used by Atcute's Lexicon CLI so `contrail dev` can resolve Lexicons in isolated `pnpx` installs.
+
+## 0.21.0
+
+### Minor Changes
+
+- 2202c5e: Add `contrail init [directory]` to create a ready-to-run starter `contrail.config.ts` without overwriting an existing config.
+
+## 0.20.1
+
+### Patch Changes
+
+- 92fedb0: Bound scheduled Jetstream cycles by retained candidate count, distinct identity updates, and serialized bytes; batch identity writes; drop exact transport observations before admission; preserve same-timestamp observations and durable actor scope across capped restarts; capture empty initial cursors safely; reject rollback-prone endpoint pools in scheduled mode; and emit one bounded aggregate cycle summary.
+
+## 0.20.0
+
+### Minor Changes
+
+- bc2f4c1: Add the first transactional projection change-log milestone. Optional static consumer definitions now create a fresh-generation log, durable registrations, and collection/phase coverage ledger. Winning logical URI changes append compact references atomically with canonical records, derived projections, tombstones, and source checkpoints; disabled configurations create no log tables or append writes.
+
+  Harden all projection writers with transaction-time predecessor guards and bounded conflict retries so overlapping cron, persistent, notify, and backfill work cannot commit stale canonical or derived state. Add independent bounded consumer leases, filtered/coalesced claims, set-oriented current-state hydration, CAS acknowledgement, failure backoff, lease renewal, private status, and manual retry APIs. Add crash-safe current-state snapshot/tail/activation bootstrap, safe additive consumers over existing coverage, required-consumer readiness gates, consumer-aware bounded pruning, and audited explicit skip operations. Current-state consumers require both projection phases, and candidate destination tokens are scoped strictly to bootstrap deliveries. Private `contrail changes` commands cover status, retry, prune, and skip. Add fair bounded Worker delivery after ingestion/retries, best-effort immediate notify wakes, runtime handler validation, deadline cancellation, isolated retry scheduling, and a persistent delivery supervisor. Include an app-owned atmo.rsvp Meilisearch reference consumer with task-success acknowledgement, hidden/delete convergence, candidate-index snapshot/tail bootstrap, and idempotent generation-marker activation. Enabling or expanding log coverage on a populated generation fails closed pending explicit quiet-boundary migration tooling.
+
+## 0.19.0
+
+### Minor Changes
+
+- 2e01ffe: Correct service auth to use an exact fragmented DID service audience and deterministic least-privilege OAuth RPC scope. Discovery, provider locks, generated clients, and DID documents now distinguish the base service DID from the JWT audience and pin the protected method set. Existing consumers must reconnect, regenerate, and reauthorize; old plain-DID/wildcard OAuth grants are not compatible.
+
 ## 0.18.0
 
 ### Minor Changes

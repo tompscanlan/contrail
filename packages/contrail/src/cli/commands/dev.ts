@@ -14,12 +14,16 @@ import { getBackfillStatus } from "../../core/status.js";
 import type { ContrailConfig, Database } from "../../core/types.js";
 import { configProjectRoot } from "../../cli-config.js";
 import { createHandler } from "../../server.js";
-import { bootstrapAlluviumDatabase } from "../../workers/backfill.js";
+import {
+  bootstrapAlluviumDatabase,
+  DEFAULT_ALLUVIUM_SOURCE_URL,
+} from "../../workers/backfill.js";
 import {
   defaultConsumerLexiconRoot,
   prepareDevLexicons,
 } from "../dev-lexicons.js";
 import {
+  confirmUnresolvedLexicons,
   promptYesNo,
   resolveConfig,
   resolveValidationLexicons,
@@ -43,6 +47,7 @@ interface DevOpts {
   alluvium?: boolean;
   alluviumEndpoint: string;
   alluviumSourceId: string;
+  alluviumSourceUrl: string;
   alluviumEpoch?: string;
   alluviumRetentionHours: number;
   allowPartial?: boolean;
@@ -79,7 +84,7 @@ function devConfig(config: ContrailConfig, options: DevOpts): ContrailConfig {
             source: options.alluviumSourceId,
             epoch: options.alluviumEpoch ?? "contrail-local-alluvium-v1",
           }
-        : { source: "jetstream", epoch: "contrail-local-jetstream-v1" }),
+        : { source: "jetstream", epoch: "contrail-local-jetstream-v2" }),
   };
 }
 
@@ -246,12 +251,16 @@ async function runSqliteDev(
     root,
     options.clientLexicons ?? defaultConsumerLexiconRoot(root),
   );
-  const lexicons = prepareDevLexicons(
+  const lexicons = await prepareDevLexicons(
     config,
     root,
     lexiconWorkspace,
     clientLexiconRoot,
     sourceRoot,
+    {
+      confirmUnresolved: (nsids) =>
+        confirmUnresolvedLexicons(nsids, options.yes === true),
+    },
   );
   const db = createSqliteDatabase(databasePath);
   const contrail = new Contrail({ ...config, db, lexicons });
@@ -278,6 +287,7 @@ async function runSqliteDev(
         lexicons,
         endpoint: options.alluviumEndpoint,
         sourceId: ordered.source,
+        sourceUrl: options.alluviumSourceUrl,
         sourceEpoch: ordered.epoch,
         retentionUs: retentionHours * 60 * 60 * 1_000_000,
         allowPartial: options.allowPartial === true,
@@ -398,7 +408,7 @@ export function registerDev(cli: CAC): void {
     .option("--concurrency <n>", "PDS backfill identity concurrency", {
       default: 100,
     })
-    .option("--yes, -y", "Accept Wrangler backfill prompts")
+    .option("--yes, -y", "Accept confirmation prompts")
     .option("--alluvium", "Use Alluvium base + archive for SQLite bootstrap")
     .option("--alluvium-endpoint <url>", "Alluvium HTTP origin", {
       default: "https://alluvium-v0.atmo.tools",
@@ -406,6 +416,11 @@ export function registerDev(cli: CAC): void {
     .option("--alluvium-source-id <id>", "Alluvium manifest source ID", {
       default: "jetstream-us-east",
     })
+    .option(
+      "--alluvium-source-url <url>",
+      "Exact legacy Jetstream v1 URL advertised by Alluvium manifests",
+      { default: DEFAULT_ALLUVIUM_SOURCE_URL },
+    )
     .option("--alluvium-epoch <epoch>", "Operator-owned continuity epoch")
     .option(
       "--alluvium-retention-hours <hours>",

@@ -11,19 +11,24 @@ import { registerDev } from "./cli/commands/dev.js";
 import { registerAppendScheduled } from "./cli/commands/append-scheduled.js";
 import { registerConnect } from "./cli/commands/connect.js";
 import { registerLexicons } from "./cli/commands/lexicons.js";
+import { registerChanges } from "./cli/commands/changes.js";
+import { registerInit } from "./cli/commands/init.js";
 
 const cli = cac("contrail");
 
+registerInit(cli);
 registerBackfill(cli);
 registerDev(cli);
 registerAppendScheduled(cli);
 registerConnect(cli);
 registerLexicons(cli);
+registerChanges(cli);
 
 cli.help();
 
 try {
-  cli.parse();
+  cli.parse(process.argv, { run: false });
+  await cli.runMatchedCommand();
 } catch (err) {
   console.error(err);
   process.exit(1);

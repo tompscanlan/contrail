@@ -14,6 +14,13 @@ import {
   prepareRecordValidation,
 } from "./core/validation";
 import { getIngestDiagnostics } from "./core/diagnostics";
+import { ChangeConsumers } from "./core/changes";
+import {
+  runPersistentChangeDeliveries,
+  type CurrentBootstrapRuntimeHandlers,
+  type DeliveryHandlers,
+  type DeliveryRuntimeOptions,
+} from "./core/delivery";
 import { optimizeDatabase } from "./core/db/optimize";
 import {
   assertServingSourceCompatibility,
@@ -22,8 +29,10 @@ import {
 } from "./core/db/records";
 import {
   createIngestState,
+  resolveScheduledIngestBudget,
   runIngestCycle,
   type IngestState,
+  type ScheduledIngestOptions,
 } from "./core/jetstream";
 import {
   backfillPending,
@@ -60,6 +69,8 @@ export interface ContrailOptions extends ContrailConfig {
 
 export class Contrail {
   readonly config: ResolvedContrailConfig;
+  /** Durable low-level claim/hydrate/ack consumer API. */
+  readonly changes: ChangeConsumers;
   private _db?: Database;
   private _ingestState: IngestState = createIngestState();
 
@@ -72,6 +83,10 @@ export class Contrail {
     // Otherwise init/app binds the runtime's generated bundle first.
     if (lexicons) prepareRecordValidation(this.config);
     this._db = db;
+    this.changes = new ChangeConsumers(
+      this.config,
+      (database) => this.getDb(database),
+    );
   }
 
   private getDb(db?: Database): Database {
@@ -115,16 +130,17 @@ export class Contrail {
   }
 
   /** Run one ingestion cycle: catches up records from Jetstream and — when
-   *  `config.labels` is set — labels from each configured labeler in parallel.
-   *  Both share the same `timeoutMs` budget; they're independent network
-   *  operations so concurrency is free. */
-  async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
+   * `config.labels` is set — labels from each configured labeler in parallel.
+   * Scheduled record collection is independently bounded by drain time,
+   * retained candidates, and serialized bytes. */
+  async ingest(options?: ScheduledIngestOptions, db?: Database): Promise<void> {
     const d = this.getDb(db);
+    const budget = resolveScheduledIngestBudget(options);
     const tasks: Promise<void>[] = [
-      runIngestCycle(d, this.config, options?.timeoutMs, this._ingestState),
+      runIngestCycle(d, this.config, budget, this._ingestState),
     ];
     if (this.config.labels) {
-      tasks.push(runLabelIngestCycle(d, this.config, options?.timeoutMs));
+      tasks.push(runLabelIngestCycle(d, this.config, budget.maxDrainMs));
     }
     await Promise.all(tasks);
   }
@@ -151,6 +167,25 @@ export class Contrail {
       );
     }
     await Promise.all(tasks);
+  }
+
+  /** Run a persistent fair change-delivery supervisor. Run this alongside
+   * `runPersistent()`; destination failures never stop source ingestion. */
+  async runPersistentDeliveries<Env>(
+    options: {
+      env: Env;
+      deliveries: DeliveryHandlers<Env>;
+      bootstraps?: CurrentBootstrapRuntimeHandlers<Env>;
+      runtime?: DeliveryRuntimeOptions & { idleMs?: number };
+    },
+    db?: Database,
+  ): Promise<void> {
+    await runPersistentChangeDeliveries({
+      changes: this.changes,
+      config: this.config,
+      db: this.getDb(db),
+      ...options,
+    });
   }
 
   /** Run *only* the labeler ingestion cycle. Escape hatch for callers who

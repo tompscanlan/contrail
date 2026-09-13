@@ -3,10 +3,10 @@ import type { ContrailConfig } from "@atmo-dev/contrail";
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
   profiles: ["app.bsky.actor.profile"],
-  jetstreams: ["wss://jetstream1.us-east.bsky.network"],
+  jetstreams: ["https://jetstream.us-east.bsky.network"],
   orderedSource: {
     source: "jetstream",
-    epoch: "api-atmo-rsvp-primary-2026-08",
+    epoch: "api-atmo-rsvp-primary-v2-2026-08",
   },
   notify: true,
   serviceAuth: {
@@ -69,6 +69,23 @@ export const config: ContrailConfig = {
         { collection: "event", maxItems: 100 },
         { collection: "rsvp", maxItems: 250 },
       ],
+    },
+  },
+};
+
+/** Candidate-generation configuration for the Meilisearch reference consumer.
+ * The active Worker keeps `config` until a fresh D1 + candidate index are built
+ * and activated together. */
+export const searchGenerationConfig: ContrailConfig = {
+  ...config,
+  changes: {
+    consumers: {
+      search: {
+        collections: ["community.lexicon.calendar.event"],
+        phases: ["historical", "live"],
+        initial: "current",
+        requiredForActivation: true,
+      },
     },
   },
 };

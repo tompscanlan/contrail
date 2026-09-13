@@ -4,7 +4,7 @@ Experimental AT Protocol Spaces support for Contrail. This package is intentiona
 
 Pinned compatibility tuple:
 
-- Contrail: workspace `0.18.x`
+- Contrail: workspace `0.23.x`
 - Spaces extension: `0.1.0-alpha.0`
 - `@atproto/space`: `0.0.0-spaces-alpha-20260818163953`
 - supported Lexicons: permissioned-data/Spaces alpha from 2026-08-18

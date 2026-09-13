@@ -3,11 +3,15 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "scripts": {
     "build": "turbo run build --filter=./packages/*",
     "build:apps": "turbo run build",
     "test": "turbo run test",
     "test:built": "pnpm --filter @atmo-dev/contrail test:built",
+    "test:workerd": "pnpm --filter @atmo-dev/contrail test:workerd",
     "bench": "node --no-warnings --experimental-strip-types apps/benchmark/src/bench.ts",
     "typecheck": "turbo run typecheck",
     "dev": "turbo run dev",
