@@ -236,6 +236,17 @@ export function listSimpleSpaceMembers(
   });
 }
 
+/** Create a record in the caller's own repo inside the space.
+ *
+ * `validate` defaults to `false`, and deliberately stays `false` by default:
+ * the PDS refuses `validate: true` for a collection whose Lexicon it does not
+ * host. Measured against pds.opnmt.net on 2026-09-13, `validate: true` on a
+ * third-party collection answers
+ * `400 {"error":"InvalidRequest","message":"Unknown lexicon type: net.openmeet.probe.note"}`,
+ * while the same write with `validate: false` answers 200. The PDS does
+ * validate collections it knows, so a caller writing a collection the
+ * authority PDS hosts can opt in with `validate: true` and read
+ * `validationStatus` to see what the server actually checked. */
 export function createSpaceRecord(
   session: AuthenticatedPdsSession,
   input: {
@@ -243,23 +254,36 @@ export function createSpaceRecord(
     collection: string;
     record: Record<string, unknown>;
     rkey?: string;
+    /** Defaults to `false`; see above before turning it on. */
+    validate?: boolean;
   },
-): Promise<{ uri: string; cid: string }> {
+): Promise<{
+  uri: string;
+  cid: string;
+  /** Present when the PDS reports what it checked: `valid` for a Lexicon it
+   * hosts and enforced, `unknown` when validation was skipped. */
+  validationStatus?: "valid" | "unknown";
+}> {
   parseSpaceUri(input.space);
   return pdsProcedure(session, "com.atproto.space.createRecord", {
     space: input.space,
     repo: session.did,
     collection: input.collection,
     ...(input.rkey ? { rkey: input.rkey } : {}),
-    validate: false,
+    validate: input.validate ?? false,
     record: input.record,
   });
 }
 
+/** Delete a record from the caller's own repo inside the space. Succeeds
+ * whether or not the record was present. `com.atproto.space.deleteRecord`
+ * declares no `validate` input and an empty output, so unlike
+ * `createSpaceRecord` there is no validation option or status to surface. */
 export function deleteSpaceRecord(
   session: AuthenticatedPdsSession,
   input: { space: string; collection: string; rkey: string },
 ): Promise<Record<string, never>> {
+  parseSpaceUri(input.space);
   return pdsProcedure(session, "com.atproto.space.deleteRecord", {
     space: input.space,
     repo: session.did,

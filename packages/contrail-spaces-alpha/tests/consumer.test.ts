@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   createSpace,
+  createSpaceRecord,
+  deleteSpaceRecord,
   formatSpacePermissionScope,
   listSimpleSpaceMembers,
   putSimpleSpaceMember,
@@ -106,5 +108,52 @@ describe("consumer scopes", () => {
       "/xrpc/com.atproto.simplespace.removeMember",
       "/xrpc/com.atproto.simplespace.updateSpace",
     ]);
+  });
+
+  it("leaves record writes unvalidated unless asked, and rejects bad URIs locally", async () => {
+    const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    const session: AuthenticatedPdsSession = {
+      did: "did:plc:alice",
+      async handle(path, init) {
+        calls.push({
+          path,
+          body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        });
+        return Response.json({
+          uri: `${space}/did:plc:alice/garden.atmo.circle.note/3kabc`,
+          cid: "bafyreic6xjqfzsgnf7hqfvxvvdrmrqpxjwjzqkoaaznptjvfbhrmrdgdru",
+          validationStatus: "unknown",
+        });
+      },
+    };
+    const space = "at://did:plc:alice/space/garden.atmo.circle/self";
+    const record = { $type: "garden.atmo.circle.note", text: "hello" };
+
+    // The PDS answers 400 "Unknown lexicon type" for validate:true on a
+    // collection it does not host, so unvalidated stays the default and the
+    // status the server reports has to reach the caller.
+    const created = await createSpaceRecord(session, {
+      space,
+      collection: "garden.atmo.circle.note",
+      record,
+    });
+    expect(created.validationStatus).toBe("unknown");
+    expect(calls[0].body).toMatchObject({ validate: false });
+
+    await createSpaceRecord(session, {
+      space,
+      collection: "garden.atmo.circle.note",
+      record,
+      validate: true,
+    });
+    expect(calls[1].body).toMatchObject({ validate: true });
+
+    // A malformed Space URI fails here rather than at the PDS.
+    expect(() => deleteSpaceRecord(session, {
+      space: "at://did:plc:alice/garden.atmo.circle.note/3kabc",
+      collection: "garden.atmo.circle.note",
+      rkey: "3kabc",
+    })).toThrow(/Invalid Space URI/);
+    expect(calls).toHaveLength(2);
   });
 });

@@ -165,9 +165,10 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
   /** Answers the write side of `com.atproto.simplespace.checkUserAccess`: the
    * single place an application decides whose independent writes the authority
    * admits to the space writer set. Required by space types whose
-   * `writePolicy` is `managing-app`; every write is denied without it, because
-   * who may write into a managed space is the application's product decision
-   * and Contrail will not guess it from read access. */
+   * `writePolicy` is `managing-app`: `createSpacesWorker` refuses to construct
+   * without it, because who may write into a managed space is the
+   * application's product decision and Contrail will not guess it from read
+   * access. */
   writeAuthorization?: {
     authorizeWrite(
       input: SpaceWriteAuthorizationInput,
@@ -802,8 +803,10 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   };
 
   /** The one place Contrail answers "should this user's writes be admitted?".
-   * A read lease says nothing about writes, so it is never consulted here, and
-   * an application that has not configured `writeAuthorization` denies. */
+   * A read lease says nothing about writes, so it is never consulted here.
+   * `writeAuthorization` is guaranteed to exist for every space type whose
+   * `writePolicy` is `managing-app`, because `createSpacesWorker` throws
+   * without it; the only remaining question is the application's answer. */
   const writeAllowed = async (
     env: Env,
     db: Database,
@@ -819,26 +822,19 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       );
       return false;
     }
-    if (!options.writeAuthorization) {
-      console.warn(
-        `[spaces] denied write for ${input.userDid} in ${input.spaceUri}: ` +
-          "no writeAuthorization.authorizeWrite is configured",
-      );
-      return false;
-    }
-    return options.writeAuthorization.authorizeWrite(input, { env, db });
+    return options.writeAuthorization!.authorizeWrite(input, { env, db });
   };
 
+  /** The read side: may this user hold a credential for the space? Writes are
+   * decided by `writeAllowed` alone, which the authority asks directly, so a
+   * write check never routes through here. */
   const accessAllowed = async (
     env: Env,
     db: Database,
     watch: SpaceWatch,
-    input: SpaceAuthorizationInput,
+    input: SpaceReadAuthorizationInput,
   ): Promise<boolean> => {
     if (input.userDid === watch.authorityDid) return true;
-    if (input.action === "write") {
-      return writeAllowed(env, db, watch.spaceType, input);
-    }
     const readPolicy = options.spaceTypes[watch.spaceType]?.readPolicy;
     if (!readPolicy) return false;
     if (readPolicy === "managing-app") {
