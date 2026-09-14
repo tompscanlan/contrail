@@ -238,15 +238,27 @@ export function listSimpleSpaceMembers(
 
 /** Create a record in the caller's own repo inside the space.
  *
- * `validate` defaults to `false`, and deliberately stays `false` by default:
- * the PDS refuses `validate: true` for a collection whose Lexicon it does not
- * host. Measured against pds.opnmt.net on 2026-09-13, `validate: true` on a
- * third-party collection answers
- * `400 {"error":"InvalidRequest","message":"Unknown lexicon type: net.openmeet.probe.note"}`,
- * while the same write with `validate: false` answers 200. The PDS does
- * validate collections it knows, so a caller writing a collection the
- * authority PDS hosts can opt in with `validate: true` and read
- * `validationStatus` to see what the server actually checked. */
+ * `validate` is a three-state protocol option, forwarded exactly as given:
+ *
+ * - **omitted** (the default) selects the PDS default: known Lexicons are
+ *   enforced, unknown ones are tolerated. Measured against pds.opnmt.net on
+ *   2026-09-13, an unknown custom collection answers `200` with
+ *   `validationStatus: "unknown"`, while a known `app.bsky.feed.post` carrying
+ *   `text: 123` answers `400 Expected string at $.record.text`.
+ * - **`true`** requires a hosted Lexicon: the same unknown collection answers
+ *   `400 {"error":"InvalidRequest","message":"Unknown lexicon type: ..."}`.
+ * - **`false`** is the legacy opt-out. The malformed known record then answers
+ *   `200` with no `validationStatus` field at all.
+ *
+ * Validation runs at the *writer's* PDS, which is not necessarily the
+ * authority PDS; a single-PDS deployment hides that distinction.
+ *
+ * The result is the writer's own commit, not authority acceptance: `uri` and
+ * `cid` prove only that the record committed to the caller's repo. Whether the
+ * authority admits that repo to the space writer set, and therefore whether
+ * any syncer ever projects the record, is decided separately by the space
+ * write policy. See the package README, "A denied write is not a refused
+ * write". */
 export function createSpaceRecord(
   session: AuthenticatedPdsSession,
   input: {
@@ -254,14 +266,16 @@ export function createSpaceRecord(
     collection: string;
     record: Record<string, unknown>;
     rkey?: string;
-    /** Defaults to `false`; see above before turning it on. */
+    /** Omitted means the protocol default: enforce known Lexicons, tolerate
+     * unknown ones. See above before setting either boolean. */
     validate?: boolean;
   },
 ): Promise<{
   uri: string;
   cid: string;
-  /** Present when the PDS reports what it checked: `valid` for a Lexicon it
-   * hosts and enforced, `unknown` when validation was skipped. */
+  /** Reported only when the PDS ran a validation path: `valid` for a Lexicon
+   * it hosts and enforced, `unknown` when the default mode tolerated a schema
+   * it does not host. Absent entirely for `validate: false`. */
   validationStatus?: "valid" | "unknown";
 }> {
   parseSpaceUri(input.space);
@@ -270,7 +284,7 @@ export function createSpaceRecord(
     repo: session.did,
     collection: input.collection,
     ...(input.rkey ? { rkey: input.rkey } : {}),
-    validate: input.validate ?? false,
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
     record: input.record,
   });
 }

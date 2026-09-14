@@ -286,6 +286,12 @@ export const actions: Actions = {
     const replyCid = form.get("replyCid");
     try {
       const space = circleUri(owner);
+      // No pre-write eligibility check is possible here: upstream
+      // `listMembers` is owner-gated, and the protocol has no "may I write?"
+      // self-check. A revoked member's write still returns 200 and commits to
+      // their own repo; it just never joins the writer set, so it is never
+      // projected. See the package README, "A denied write is not a refused
+      // write".
       await createSpaceRecord(session, {
         space,
         collection: NOTE_COLLECTION,

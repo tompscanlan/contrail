@@ -110,7 +110,7 @@ describe("consumer scopes", () => {
     ]);
   });
 
-  it("leaves record writes unvalidated unless asked, and rejects bad URIs locally", async () => {
+  it("forwards the three protocol validation modes, and rejects bad URIs locally", async () => {
     const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
     const session: AuthenticatedPdsSession = {
       did: "did:plc:alice",
@@ -129,17 +129,18 @@ describe("consumer scopes", () => {
     const space = "at://did:plc:alice/space/garden.atmo.circle/self";
     const record = { $type: "garden.atmo.circle.note", text: "hello" };
 
-    // The PDS answers 400 "Unknown lexicon type" for validate:true on a
-    // collection it does not host, so unvalidated stays the default and the
-    // status the server reports has to reach the caller.
+    // Omitting the field selects the PDS default: Lexicons it hosts are
+    // enforced, unknown ones are tolerated and reported as `unknown`. Sending
+    // `validate: false` instead would also skip the known-collection check.
     const created = await createSpaceRecord(session, {
       space,
       collection: "garden.atmo.circle.note",
       record,
     });
     expect(created.validationStatus).toBe("unknown");
-    expect(calls[0].body).toMatchObject({ validate: false });
+    expect(calls[0].body).not.toHaveProperty("validate");
 
+    // `true` requires a hosted Lexicon; `false` remains the legacy opt-out.
     await createSpaceRecord(session, {
       space,
       collection: "garden.atmo.circle.note",
@@ -147,6 +148,13 @@ describe("consumer scopes", () => {
       validate: true,
     });
     expect(calls[1].body).toMatchObject({ validate: true });
+    await createSpaceRecord(session, {
+      space,
+      collection: "garden.atmo.circle.note",
+      record,
+      validate: false,
+    });
+    expect(calls[2].body).toMatchObject({ validate: false });
 
     // A malformed Space URI fails here rather than at the PDS.
     expect(() => deleteSpaceRecord(session, {
@@ -154,6 +162,6 @@ describe("consumer scopes", () => {
       collection: "garden.atmo.circle.note",
       rkey: "3kabc",
     })).toThrow(/Invalid Space URI/);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
   });
 });

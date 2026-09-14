@@ -69,26 +69,42 @@ createSpacesWorker({
 });
 ```
 
-Both axes accept `public`, `member-list`, and `managing-app`, and the pair may differ: public-read with managing-app-write is a normal configuration. `SpacesSyncEngine` asserts each configured axis against the authority PDS Space description before it syncs, so a Space whose `readPolicy` or `writePolicy` has drifted from the configuration is refused rather than projected.
+Both axes accept `public`, `member-list`, and `managing-app`, and the pair may differ: public-read with managing-app-write is a normal configuration. `SpacesSyncEngine` asserts both configured axes against the live authority Space description before *any* path mutates the projection — authorization, scheduled reconciliation, and notification-driven `syncRepo` alike — so a Space whose `readPolicy` or `writePolicy` has drifted from the configuration is refused rather than projected. A signed `notifyWrite` is proof of who wrote, never proof that the Space still matches the configuration, so the push path re-checks it too; one description satisfies further ingestion for 15 seconds, so a reconciliation pass does not re-describe the Space once per writer, and policy drift is noticed without recreating the Space.
 
 `writeAuthorization.authorizeWrite` is **required** for any Space type whose `writePolicy` is `managing-app`. An application that leaves it unconfigured does not fail later at a denied write; `createSpacesWorker` throws `Managing-app write policies require options.writeAuthorization.authorizeWrite` at construction. `authorization.authorize` is required the same way for `readPolicy: "managing-app"`. Only the `managing-app` axes need a callback, so a Space type may combine a native policy on one axis with a callback on the other.
 
-Both callbacks answer `com.atproto.simplespace.checkUserAccess`, which the authority PDS calls with `access=read` or `access=write`. The read question is "may this user hold a credential for this Space?"; the write question is "should the authority admit this user's own repo to the Space's writer set?". The write question is asked once per user rather than once per record, and never carries a client attestation.
+Both callbacks answer `com.atproto.simplespace.checkUserAccess`, which the authority PDS calls with `access=read` or `access=write`. The read question is "may this user hold a credential for this Space?"; the write question is "should the authority admit this user's own repo to the Space's writer set?". The write decision has user/space granularity — no collection, record, or action detail, and never a client attestation — but it is not a one-time admission: upstream `processNotifyWrite` asks again before recording a write notification, so the callback is a repeatedly evaluated write-admission check. Do not cache it as a permanent grant, and do not put expensive work behind it.
 
 ### A denied write is not a refused write
 
 This is counter-intuitive, and an application that assumes otherwise will be wrong. On the live alpha PDS:
 
 - `com.atproto.space.createRecord` from a member the authority denies returns `200` with a real `uri` and `cid`. The record commits to **the writer's own repo**. No error is raised anywhere in the request path.
-- What the write policy controls is admission to the Space's **writer set**, which is what `com.atproto.space.listRepos` enumerates. A denied writer never appears there, so the syncer never learns their repo exists and their records are never projected.
+- What the write policy controls is admission to the Space's **writer set**, which is what `com.atproto.space.listRepos` enumerates. A denied writer never appears there, so a syncer that discovers writers through `listRepos` never learns their repo exists.
 - That is a discovery boundary, not confidentiality: a Space-credential holder who already knows the DID can still read those records with `com.atproto.space.listRecords?repo=<did>`. Withholding a DID from `listRepos` hides existence, not content.
-- Revocation behaves the same way. After `putSimpleSpaceMember(space, { did, read: true, write: false })` the writer's later writes still return `200`; the authority simply stops advancing that writer's `rev` in the writer set, so their entry freezes at the last authorized commit and the syncer silently stops seeing new records.
+- Revocation is an admission boundary too, not a retraction. After `putSimpleSpaceMember(space, { did, read: true, write: false })` the writer's later writes still return `200`, and the authority stops advancing that writer's `rev` in the writer set. A syncer holding a checkpoint for that writer sees no new records from incremental sync — but the frozen `rev` is authority metadata, not a content cutoff, and `listRepos.rev` is explicitly documented as possibly lagging the writer's host.
+- **A rebuilt index can still see revoked writes.** Recovery fetches the writer's *current* CAR, which is not limited to the last revision the authority admitted. Measured with this client against the alpha PDS: a warm projection reconciled after revocation holds only the pre-revocation record, while a fresh Contrail database authorized for the same Space projects both. Visibility therefore depends on local sync history, not on authority policy alone.
+- So denial guarantees no further authority admission, no writer-set metadata advance, and no further notifications for that writer. It does not guarantee deletion at the writer's PDS, refusal of credentialed retrieval by DID, or exclusion from a later full recovery.
 
-An application that needs an unauthorized write to *fail* must refuse it in its own UI or API before calling the PDS. `writePolicy` decides what the Space publishes, not what the writer's PDS accepts.
+An application that needs an unauthorized write to *fail* must refuse it in its own UI or API before calling the PDS. `writePolicy` decides what the Space publishes, not what the writer's PDS accepts. An application that needs specific contributions rejected or hidden after the fact must enforce that in its own operations and projection acceptance: neither a UI check nor a write-policy change stops a direct protocol client, and neither retracts what a fresh index can recover.
+
+### The managing-app axes must name this Worker
+
+`SpaceTypeConfig` stores policy *kinds*, not managing-app identities: `assertPolicy` requires every `managing-app` axis to name this Worker's own `service.audience`, and only open `appAccess` is supported. Upstream can name a different managing application on each axis, and this client refuses that arrangement rather than syncing a Space whose write decisions belong elsewhere. Acting as a neutral read-only syncer for a Space another application manages is therefore outside the alpha's role, and a future read-only client must not inherit the Worker's mandatory-authorizer rule blindly.
 
 ### Writing records
 
-`createSpaceRecord` sends `validate: false` unless a caller opts in, because the authority PDS rejects `validate: true` for a collection whose Lexicon it does not host: measured against `pds.opnmt.net` on 2026-09-13, `validate: true` on a third-party collection answers `400 {"error":"InvalidRequest","message":"Unknown lexicon type: net.openmeet.probe.note"}`, while the same write with `validate: false` answers `200`. The PDS does validate collections it knows, so pass `validate: true` when the authority hosts the Lexicon and read the returned `validationStatus` (`valid` or `unknown`) to see what the server actually checked. `com.atproto.space.deleteRecord` declares no `validate` input and returns an empty body, so `deleteSpaceRecord` has no equivalent option.
+`createSpaceRecord` forwards `validate` exactly as given and omits the field by default, which selects the protocol's own mode: enforce Lexicons the PDS hosts, tolerate the ones it does not. Measured against `pds.opnmt.net` on 2026-09-13:
+
+| Record | `validate` | Result |
+|---|---|---|
+| unknown custom collection | omitted | `200`, `validationStatus: "unknown"` |
+| unknown custom collection | `true` | `400 Unknown lexicon type: …` |
+| known `app.bsky.feed.post` with `text: 123` | omitted | `400 Expected string at $.record.text` |
+| the same malformed known record | `false` | `200`, and **no** `validationStatus` field |
+| valid known post | omitted | `200`, `validationStatus: "valid"` |
+
+The default therefore keeps ordinary third-party-collection writes working while still rejecting a malformed record in a collection the PDS hosts. It is a deliberate behavior change from this package's earlier unconditional `validate: false`: a malformed record in a known collection used to commit and now fails. Both booleans remain available — `true` requires a hosted Lexicon, `false` is the legacy opt-out that reports no status at all. Validation runs at the **writer's** PDS, which need not be the authority PDS; a single-PDS deployment hides that distinction. `com.atproto.space.deleteRecord` declares no `validate` input and returns an empty body, so `deleteSpaceRecord` has no equivalent option.
 
 ## Provider requirements
 

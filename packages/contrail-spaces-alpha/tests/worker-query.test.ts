@@ -5,12 +5,14 @@ import {
   createIngestEvent,
   createIsolatedProjection,
   ingestRecords,
+  queryIsolatedRecords,
   resolveConfig,
 } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { beforeAll, describe, expect, it } from "vitest";
+import { JoseKey } from "@atproto/jwk-jose";
 import { createSpacesWorker } from "../src/worker";
-import { ensureSpaceWatch, initSpacesStorage } from "../src/storage";
+import { ensureSpaceWatch, getSpaceWatch, initSpacesStorage, saveCredential } from "../src/storage";
 import { spaceProjectionKey } from "../src/uri";
 
 const issuer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -290,6 +292,59 @@ describe("Spaces Worker private query boundary", () => {
         },
       },
     })).not.toThrow();
+
+    // A JavaScript caller satisfies a truthiness check with a container that
+    // holds no callback, and would then fail only at the first live callback.
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "public",
+          writePolicy: "managing-app",
+        },
+      },
+      // @ts-expect-error The callable is required, not merely its container.
+      writeAuthorization: {},
+    })).toThrow(/writeAuthorization\.authorizeWrite/);
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "public",
+          writePolicy: "managing-app",
+        },
+      },
+      // @ts-expect-error authorizeWrite must be callable.
+      writeAuthorization: { authorizeWrite: true },
+    })).toThrow(/writeAuthorization\.authorizeWrite/);
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "managing-app",
+          writePolicy: "member-list",
+        },
+      },
+      // @ts-expect-error authorize must be callable.
+      authorization: { authorize: "yes" },
+    })).toThrow(/authorization\.authorize/);
+    // Inherited Object.prototype members are not policy names.
+    for (const policy of ["toString", "constructor", "__proto__"]) {
+      expect(() => createSpacesWorker({
+        ...base,
+        spaceTypes: {
+          "garden.atmo.circle": {
+            collections: [collection],
+            // @ts-expect-error Only the three supported policy names are valid.
+            readPolicy: policy,
+            writePolicy: "member-list",
+          },
+        },
+      })).toThrow(/explicit supported read policy/);
+    }
   });
 
   it("answers checkUserAccess writes from the write authorizer alone", async () => {
@@ -434,5 +489,125 @@ describe("Spaces Worker private query boundary", () => {
     } as never, context());
     expect(await response.json()).toEqual({ authorized: false });
     expect(readChecks).toEqual([]);
+  });
+
+  it("refuses a signed notifyWrite once the authority write policy drifts", async () => {
+    const db = createSqliteDatabase(":memory:");
+    bindRecordValidationLexicons(projection, lexicons);
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: space });
+    const encryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    const dpop = await JoseKey.generate(["ES256"]);
+    await saveCredential(db, {
+      spaceUri: space,
+      generation: 1,
+      viewerDid: issuer,
+      credential: {
+        token: "space-credential",
+        privateJwk: { ...dpop.privateJwk! },
+        expiresAt: Date.now() + 600_000,
+      },
+      encryptionKey,
+    });
+    const requested: string[] = [];
+    const stub: typeof globalThis.fetch = async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      requested.push(url.pathname);
+      if (url.hostname === "plc.test") {
+        return Response.json({
+          "@context": ["https://www.w3.org/ns/did/v1"],
+          id: issuer,
+          service: [{
+            id: "#atproto_pds",
+            type: "AtprotoPersonalDataServer",
+            serviceEndpoint: "https://authority.test",
+          }],
+        });
+      }
+      if (url.pathname === "/xrpc/com.atproto.simplespace.getSpace") {
+        // The authority widened writes to `public` while this Worker still
+        // configures `member-list`.
+        return Response.json({
+          uri: space,
+          readPolicy: { $type: "com.atproto.simplespace.defs#publicPolicy" },
+          writePolicy: { $type: "com.atproto.simplespace.defs#publicPolicy" },
+          appAccess: { $type: "com.atproto.simplespace.defs#open" },
+        });
+      }
+      return Response.json({ error: "UnexpectedRequest" }, { status: 500 });
+    };
+    const worker = createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+        resolver: {
+          async resolve(did) {
+            return {
+              "@context": [],
+              id: did,
+              verificationMethod: [{
+                id: `${did}#atproto`,
+                type: "Multikey",
+                controller: did,
+                publicKeyMultibase: await keypair.exportPublicKey("multikey"),
+              }],
+            };
+          },
+        },
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          readPolicy: "public",
+          writePolicy: "member-list",
+          skey: "self",
+        },
+      },
+      notificationRegistration: "disabled",
+      protocol: { plcUrl: "https://plc.test", fetch: stub },
+    });
+    const pending: Array<Promise<unknown>> = [];
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+      passThroughOnException() {},
+      props: {},
+    } as unknown as ExecutionContext;
+    const env = { DB: db, SPACES_CREDENTIAL_ENCRYPTION_KEY: encryptionKey } as never;
+    const method = "com.atproto.space.notifyWrite";
+    const response = await worker.fetch!(new Request(
+      `https://spaces.atmo.garden/xrpc/${method}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await token(method)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          space,
+          repo: "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+          rev: "3lxyzwriterrev",
+          hash: { $bytes: Buffer.from(new Uint8Array(32)).toString("base64url") },
+        }),
+      },
+    ) as never, env, ctx);
+    expect(response.status).toBe(202);
+
+    // The signed notification is acknowledged, but the drifted write policy
+    // must refuse it before the writer's repo is read or anything projected.
+    await expect(Promise.all(pending)).rejects.toThrow(
+      "Space write policy is not the configured member-list policy",
+    );
+    expect(requested.filter((path) => path.startsWith("/xrpc/com.atproto.space.")))
+      .toEqual([]);
+    expect((await getSpaceWatch(db, space))?.lastError)
+      .toContain("Space write policy is not the configured member-list policy");
+    const projected = await queryIsolatedRecords(db, projection, {
+      scope: { kind: "isolated", key: spaceProjectionKey(space, 1) },
+      collection: "note",
+      limit: 10,
+    });
+    expect(projected.records).toEqual([]);
   });
 });

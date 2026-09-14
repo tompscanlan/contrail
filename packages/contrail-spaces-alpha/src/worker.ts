@@ -28,6 +28,7 @@ import {
   type SpaceWatch,
 } from "./storage";
 import {
+  isSpaceUserPolicy,
   resolveSpacesSyncBudget,
   SpacesSyncEngine,
   type SpacesSyncBudgetOptions,
@@ -54,8 +55,10 @@ export interface SpaceReadAuthorizationInput extends SpaceAuthorizationRequest {
 }
 
 /** A write check: should the authority admit this user's own repo to the
- * space's writer set? Asked once per user by the authority PDS, not once per
- * record, and never carries a client attestation. */
+ * space's writer set? A coarse user/space write-admission decision, carrying
+ * no collection, record, or action detail and never a client attestation. The
+ * authority re-evaluates it on write notifications rather than granting it
+ * once, so an embedder must not cache it as a permanent admission. */
 export interface SpaceWriteAuthorizationInput extends SpaceAuthorizationRequest {
   action: "write";
 }
@@ -643,39 +646,59 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   }
   bindRecordValidationLexicons(projection, options.lexicons);
   prepareRecordValidation(projection);
-  const supportedPolicies: Record<string, true> = {
-    public: true,
-    "member-list": true,
-    "managing-app": true,
-  };
+  const spaceTypes: Record<string, SpaceTypeConfig> = Object.create(null);
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
-    if (!supportedPolicies[type.readPolicy]) {
+    if (!isSpaceUserPolicy(type.readPolicy)) {
       throw new TypeError(
         `Space type ${spaceType} requires an explicit supported read policy`,
       );
     }
-    if (!supportedPolicies[type.writePolicy]) {
+    if (!isSpaceUserPolicy(type.writePolicy)) {
       throw new TypeError(
         `Space type ${spaceType} requires an explicit supported write policy`,
       );
     }
+    // A validated prototype-free snapshot: later policy decisions never
+    // re-read the caller's mutable options object, and an NSID-shaped Space
+    // type taken from a request cannot resolve to an inherited
+    // Object.prototype member.
+    spaceTypes[spaceType] = Object.freeze({
+      collections: Object.freeze([...type.collections]),
+      ...(type.skey === undefined ? {} : { skey: type.skey }),
+      readPolicy: type.readPolicy,
+      writePolicy: type.writePolicy,
+    });
   }
-  const managingAppReads = Object.values(options.spaceTypes).some(
+  const managingAppReads = Object.values(spaceTypes).some(
     (type) => type.readPolicy === "managing-app",
   );
-  const managingAppWrites = Object.values(options.spaceTypes).some(
+  const managingAppWrites = Object.values(spaceTypes).some(
     (type) => type.writePolicy === "managing-app",
   );
   const managingAppEnabled = managingAppReads || managingAppWrites;
-  if (managingAppReads && !options.authorization) {
-    throw new TypeError("Managing-app read policies require an authoritative authorizer");
+  // The required callables are validated and captured once. A truthiness check
+  // over `options.writeAuthorization` accepts `{}` or `{ authorizeWrite: true }`
+  // from a JavaScript caller and fails only at the first live callback, and
+  // reading the mutable options object per request cannot preserve whatever
+  // construction checked.
+  const authorizeRead = options.authorization?.authorize;
+  const listAuthorizedSpaces = options.authorization?.listSpaces;
+  const authorizeWrite = options.writeAuthorization?.authorizeWrite;
+  if (managingAppReads && typeof authorizeRead !== "function") {
+    throw new TypeError(
+      "Managing-app read policies require options.authorization.authorize",
+    );
   }
-  if (managingAppWrites && !options.writeAuthorization) {
+  if (managingAppWrites && typeof authorizeWrite !== "function") {
     throw new TypeError(
       "Managing-app write policies require options.writeAuthorization.authorizeWrite",
     );
   }
-  for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
+  if (listAuthorizedSpaces !== undefined &&
+    typeof listAuthorizedSpaces !== "function") {
+    throw new TypeError("options.authorization.listSpaces must be a function");
+  }
+  for (const [spaceType, type] of Object.entries(spaceTypes)) {
     for (const nsid of type.collections) {
       const collection = Object.values(projection.collections).find(
         (candidate) => candidate.collection === nsid,
@@ -768,7 +791,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     }
     const engine = new SpacesSyncEngine(db, {
       projection,
-      spaceTypes: options.spaceTypes,
+      spaceTypes,
       serviceAudience: options.service.audience,
       credentialEncryptionKey: stringBinding(env, encryptionBinding),
       reconcileIntervalMs: options.reconcileIntervalMs,
@@ -804,7 +827,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
 
   /** The one place Contrail answers "should this user's writes be admitted?".
    * A read lease says nothing about writes, so it is never consulted here.
-   * `writeAuthorization` is guaranteed to exist for every space type whose
+   * `authorizeWrite` is a validated callable for every space type whose
    * `writePolicy` is `managing-app`, because `createSpacesWorker` throws
    * without it; the only remaining question is the application's answer. */
   const writeAllowed = async (
@@ -813,7 +836,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     spaceType: string,
     input: SpaceWriteAuthorizationInput,
   ): Promise<boolean> => {
-    const writePolicy = options.spaceTypes[spaceType]?.writePolicy;
+    const writePolicy = spaceTypes[spaceType]?.writePolicy;
     if (writePolicy !== "managing-app") {
       console.warn(
         `[spaces] denied write for ${input.userDid} in ${input.spaceUri}: ` +
@@ -822,7 +845,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       );
       return false;
     }
-    return options.writeAuthorization!.authorizeWrite(input, { env, db });
+    return authorizeWrite!(input, { env, db });
   };
 
   /** The read side: may this user hold a credential for the space? Writes are
@@ -835,10 +858,10 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     input: SpaceReadAuthorizationInput,
   ): Promise<boolean> => {
     if (input.userDid === watch.authorityDid) return true;
-    const readPolicy = options.spaceTypes[watch.spaceType]?.readPolicy;
+    const readPolicy = spaceTypes[watch.spaceType]?.readPolicy;
     if (!readPolicy) return false;
     if (readPolicy === "managing-app") {
-      return options.authorization!.authorize(input, { env, db });
+      return authorizeRead!(input, { env, db });
     }
     return hasAccessLease(db, {
       userDid: input.userDid,
@@ -881,7 +904,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         await ready();
         if (!validDid(input.userDid)) throw new TypeError("invalid user DID");
         const parsed = parseSpaceUri(input.space);
-        if (!options.spaceTypes[parsed.type]) {
+        if (!spaceTypes[parsed.type]) {
           throw new SpacesRuntimeError("UnsupportedSpace", 400, "Unsupported Space");
         }
         if (!input.delegation) throw new TypeError("delegation is required");
@@ -996,8 +1019,8 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         });
         const watches = new Map(indexed.map((watch) => [watch.spaceUri, watch]));
         let customTruncated = false;
-        if (options.authorization?.listSpaces) {
-          const listed = await options.authorization.listSpaces(input.userDid, { env, db });
+        if (listAuthorizedSpaces) {
+          const listed = await listAuthorizedSpaces(input.userDid, { env, db });
           customTruncated = listed.length > 1_000;
           for (const spaceUri of listed.slice(0, 1_000)) {
             if (typeof spaceUri !== "string" || spaceUri <= (input.cursor ?? "")) continue;
@@ -1188,7 +1211,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         ...(providerLexicons.length
           ? { lexicons: new URL("/lexicons", options.service.endpoint).href }
           : {}),
-        spacesAlpha: "0.0.0-spaces-alpha-20260818163953",
+        spacesAlpha: "0.0.0-spaces-alpha-20260913191958",
       });
     }
 
@@ -1348,10 +1371,10 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
             action: "read",
             method,
           });
-        } else if (options.authorization) {
+        } else if (authorizeRead) {
           // A custom policy may authorize before the first watch, or for a
           // verified recreation while the old generation remains hidden.
-          authorized = await options.authorization.authorize({
+          authorized = await authorizeRead({
             userDid,
             spaceUri: parsed.uri,
             action: "read",

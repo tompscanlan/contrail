@@ -19,7 +19,9 @@ import {
   type SpaceUserPolicy,
 } from "../src/sync";
 import {
+  ensureSpaceWatch,
   getRepoState,
+  getSpaceWatch,
   initSpacesStorage,
   type SpaceRepoState,
   type SpaceWatch,
@@ -359,6 +361,64 @@ describe("Spaces incremental synchronization", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+describe("Notification-driven Space synchronization", () => {
+  it("re-asserts the configured policies before a signed push is projected", async () => {
+    const db = createSqliteDatabase(":memory:");
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: SPACE });
+    const engine = new SpacesSyncEngine(db, {
+      projection,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [COLLECTION],
+          readPolicy: "public",
+          writePolicy: "member-list",
+        },
+      },
+      serviceAudience: AUDIENCE,
+      credentialEncryptionKey: "unused-in-direct-test",
+    });
+    vi.spyOn(engine.identities, "resolvePds").mockResolvedValue("https://authority.test");
+    const paths: string[] = [];
+    // The authority widened writes to `public` while this syncer still
+    // configures `member-list`.
+    let writePolicy: Record<string, unknown> = {
+      $type: "com.atproto.simplespace.defs#publicPolicy",
+    };
+    vi.spyOn(
+      engine as unknown as { transport: () => Promise<SpaceCredentialTransport> },
+      "transport",
+    ).mockImplementation(async () => transportFor((url) => {
+      paths.push(url.pathname);
+      if (url.pathname === "/xrpc/com.atproto.simplespace.getSpace") {
+        return Response.json({
+          uri: SPACE,
+          readPolicy: { $type: "com.atproto.simplespace.defs#publicPolicy" },
+          writePolicy,
+          appAccess: { $type: "com.atproto.simplespace.defs#open" },
+        });
+      }
+      return Response.json({ error: "UnexpectedRequest" }, { status: 500 });
+    }));
+
+    // A signed notifyWrite proves authorship, not that the Space still matches
+    // the configuration, so nothing may be fetched from the writer or ingested.
+    await expect(engine.syncRepo(SPACE, WRITER, {
+      rev: "2",
+      hash: new Uint8Array(32),
+    })).rejects.toThrow("Space write policy is not the configured member-list policy");
+    expect(paths).toEqual(["/xrpc/com.atproto.simplespace.getSpace"]);
+    expect((await getSpaceWatch(db, SPACE))?.lastError)
+      .toContain("Space write policy is not the configured member-list policy");
+
+    // Once the drift is resolved the same push proceeds to the writer's repo:
+    // this is a policy gate, not a blanket refusal of pushed work.
+    writePolicy = { $type: "com.atproto.simplespace.defs#memberListPolicy" };
+    await expect(engine.syncRepo(SPACE, WRITER)).rejects.toThrow();
+    expect(paths).toContain("/xrpc/com.atproto.space.getRepo");
   });
 });
 

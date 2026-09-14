@@ -60,6 +60,13 @@ const SPACE_POLICY_TYPES: Record<SpaceUserPolicy, string> = {
   "managing-app": "com.atproto.simplespace.defs#managingAppPolicy",
 };
 
+/** Own-membership policy-name check. A plain object lookup would accept
+ * inherited names such as `toString` or `constructor` from untyped
+ * configuration and treat them as supported policies. */
+export function isSpaceUserPolicy(value: unknown): value is SpaceUserPolicy {
+  return typeof value === "string" && Object.hasOwn(SPACE_POLICY_TYPES, value);
+}
+
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
@@ -132,6 +139,13 @@ export interface ReconcileOptions {
 
 const SYNC_LEASE_TTL_MS = 90_000;
 
+/** How long one authority policy description may satisfy a later projection
+ * mutation on the same engine instance. It exists so that one reconciliation
+ * pass does not re-describe the same Space once per writer; it is deliberately
+ * short rather than keyed to the Space generation for the engine's lifetime,
+ * because either policy can change without recreating the Space. */
+const POLICY_CHECK_TTL_MS = 15_000;
+
 class SyncLeaseLostError extends Error {
   constructor() {
     super("Space repo sync lease was lost");
@@ -164,13 +178,18 @@ function collectionAllowed(
   watch: SpaceWatch,
   collection: string,
 ): boolean {
-  return config.spaceTypes[watch.spaceType]?.collections.includes(collection) ?? false;
+  // Own-property lookup only: a Space type is an NSID-shaped string taken from
+  // a URI on the network, and `toString`/`constructor` would otherwise resolve
+  // to inherited Object.prototype members.
+  if (!Object.hasOwn(config.spaceTypes, watch.spaceType)) return false;
+  return config.spaceTypes[watch.spaceType].collections.includes(collection);
 }
 
 export class SpacesSyncEngine {
   readonly identities: SpaceIdentityResolver;
   private readonly logger: Pick<Console, "log" | "warn" | "error">;
   private readonly budget: SpacesSyncBudget;
+  private readonly policyChecks = new Map<string, number>();
 
   constructor(
     readonly db: Database,
@@ -214,7 +233,9 @@ export class SpacesSyncEngine {
   ): Promise<void> {
     const transport = suppliedTransport ?? await this.transport(watch);
     const parsed = parseSpaceUri(watch.spaceUri);
-    const type = this.config.spaceTypes[parsed.type];
+    const type = Object.hasOwn(this.config.spaceTypes, parsed.type)
+      ? this.config.spaceTypes[parsed.type]
+      : undefined;
     if (!type) throw new Error(`Unsupported Space type: ${parsed.type}`);
     if (type.skey !== undefined && parsed.skey !== type.skey) {
       throw new Error(`Unsupported Space key for ${parsed.type}`);
@@ -257,6 +278,41 @@ export class SpacesSyncEngine {
     }
   }
 
+  /** Every path that mutates the projection asserts the configured policies
+   * first, and `reconcileSpace` is not the only entrance: a signed
+   * `notifyWrite` lands in `syncRepo` through the Queue or the development
+   * `waitUntil` fallback. A signature proves who wrote, never that the Space
+   * still matches the configured `readPolicy`/`writePolicy`, so signed data is
+   * not thereby data the configured policy permits. */
+  private async assertConfiguredPolicies(
+    watch: SpaceWatch,
+    transport: SpaceCredentialTransport,
+  ): Promise<void> {
+    const key = spaceProjectionKey(watch.spaceUri, watch.generation);
+    const checkedAt = this.policyChecks.get(key);
+    if (checkedAt !== undefined && Date.now() - checkedAt < POLICY_CHECK_TTL_MS) {
+      return;
+    }
+    try {
+      await this.validateWatch(watch, transport);
+    } catch (error) {
+      this.policyChecks.delete(key);
+      if (!(error instanceof SpaceProtocolError && error.deleted)) {
+        // A push that arrives after policy drift is a visible watch error, not
+        // a silent projection: reconciliation reports the same divergence.
+        await updateWatch(this.db, watch.spaceUri, {
+          error: error instanceof Error
+            ? error.message.slice(0, 500)
+            : "Space policy check failed",
+          nextReconcileAt: Date.now() + 60_000,
+          expectedGeneration: watch.generation,
+        });
+      }
+      throw error;
+    }
+    this.policyChecks.set(key, Date.now());
+  }
+
   async reconcileDue(options: ReconcileOptions = {}): Promise<number> {
     const limit = Math.min(Math.max(1, options.limit ?? 5), 50);
     const deadline = options.deadline ?? Date.now() + 25_000;
@@ -283,7 +339,7 @@ export class SpacesSyncEngine {
     const deadline = options.deadline ?? Date.now() + 25_000;
     try {
       const transport = await this.transport(watch);
-      await this.validateWatch(watch, transport);
+      await this.assertConfiguredPolicies(watch, transport);
       const authorityPds = await this.identities.resolvePds(watch.authorityDid);
       const registrationMode = this.config.notificationRegistration ?? "best-effort";
       const renewalWindow = this.config.registrationRenewalWindowMs ?? 60 * 60_000;
@@ -411,6 +467,7 @@ export class SpacesSyncEngine {
         currentWatch.status === "hidden") return;
       const transport = await this.transport(watch);
       await assertLease();
+      await this.assertConfiguredPolicies(watch, transport);
       const state = await getRepoState(this.db, watch, repoDid);
       if (!state) {
         await this.recoverRepo(watch, repoDid, transport, assertLease);

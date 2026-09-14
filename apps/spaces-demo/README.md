@@ -10,6 +10,7 @@ An integrated SvelteKit + Contrail Spaces-alpha application with PDS-native memb
 - Reads query the Worker-bound D1 projection directly.
 - A short-lived ticket opens a Durable Object WebSocket for invalidations, with a 30-second foreground refresh fallback.
 - Standard PDS `notifyWrite` and deletion callbacks remain service-authenticated at `spaces.atmo.garden`.
+- The composer does **not** pre-check write eligibility, because the protocol offers no self-check: `com.atproto.simplespace.listMembers` is owner-gated upstream (`assertSpaceOwner`), so a member cannot read their own write flag. A member whose write access was revoked still commits to their own repo and receives `200`; the record simply never joins the Space writer set. An application that must refuse such a write in its own UI needs its own membership state.
 
 Only Spaces-compatible PDS accounts can use the alpha. Browser invalidations never contain private records.
 
