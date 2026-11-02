@@ -98,4 +98,35 @@ pnpx @atmo-dev/contrail connect https://my-appview.example.com
 
 When the config changes, regenerate the Lexicons, deploy, backfill any new collections, and reconnect the client with `--update`.
 
+## Settings from the environment
+
+`contrail backfill` loads the config outside the Worker. When the config depends on settings, such as the relays and identity services of another atproto network, export it as a function of the environment. Commands that open a D1 binding (`backfill`, `changes`, and `dev` on a Wrangler project) call it with the Worker env that wrangler builds: `vars` from wrangler.jsonc, `.dev.vars` or `.env`, and the process environment when `CLOUDFLARE_INCLUDE_PROCESS_ENV=true`. Other commands call it with `process.env`.
+
+```ts
+// contrail.config.ts
+import type { ContrailConfig } from "@atmo-dev/contrail";
+
+export default (env: Record<string, unknown>): ContrailConfig => ({
+  namespace: "com.example",
+  collections: {
+    // ...your existing collections
+  },
+  ...(env.RELAY_URLS ? { relays: String(env.RELAY_URLS).split(",") } : {}),
+});
+```
+
+The Worker calls it with its own env:
+
+```ts
+// worker.ts
+import { env } from "cloudflare:workers";
+import { createWorker } from "@atmo-dev/contrail/worker";
+import config from "./contrail.config";
+import { lexicons } from "./lexicons/generated";
+
+export default createWorker(config(env), { lexicons });
+```
+
+To backfill the local database that `wrangler dev --persist-to <dir>` uses, pass the same directory: `pnpm contrail backfill --persist-to <dir>`. Without it, local runs use `.wrangler/state`. Each run prints the database it writes and the relays it reads.
+
 For optional outbox deliveries, feeds, and labels, see [advanced topics](./advanced/README.md).

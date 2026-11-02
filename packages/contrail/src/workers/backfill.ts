@@ -9,6 +9,7 @@
  * All dynamically import `wrangler` (optional peer dep) and wire it to
  * the user's D1 binding, then dispose the proxy on exit.
  */
+import { resolve } from "node:path";
 import { Contrail } from "../contrail.js";
 import {
   getDiscoverableNsids,
@@ -27,15 +28,59 @@ import {
   type AlluviumTransportOptions,
 } from "../adapters/alluvium.js";
 
-interface WranglerCommon {
-  config: ContrailConfig;
-  /** Exact generated/pinned bundle for collections with `validate: true`. */
-  lexicons?: object[];
+export interface WranglerDatabaseOptions {
   /** Use production D1 bindings. Equivalent to
    *  `getPlatformProxy({ environment: "production" })`. */
   remote?: boolean;
   /** Name of the D1 binding in wrangler.jsonc. Default: `"DB"`. */
   binding?: string;
+  /** Local state directory, meaning what `wrangler dev --persist-to` means:
+   *  bindings data lives under `<persistTo>/v3`, resolved from the current
+   *  directory. Default: wrangler's `.wrangler/state`. */
+  persistTo?: string;
+}
+
+export interface WranglerDatabase {
+  db: Database;
+  /** The Worker env wrangler built: wrangler.jsonc `vars`, local dev
+   *  variables (`.dev.vars`, or `.env` files when there is none), the process
+   *  env under `CLOUDFLARE_INCLUDE_PROCESS_ENV`, and the bindings. */
+  env: Record<string, unknown>;
+  dispose(): Promise<void>;
+}
+
+/** Open a D1 binding through wrangler's platform proxy. Call `dispose()` when
+ *  done. */
+export async function openWranglerDatabase(
+  opts: WranglerDatabaseOptions = {},
+): Promise<WranglerDatabase> {
+  // Dynamic import so wrangler is only required when these helpers are
+  // actually called — keeps the main package usable in runtimes without it.
+  const { getPlatformProxy } = await import("wrangler");
+  const binding = opts.binding ?? "DB";
+
+  const { env, dispose } = await getPlatformProxy({
+    environment: opts.remote ? "production" : undefined,
+    ...(opts.persistTo
+      ? { persist: { path: resolve(opts.persistTo, "v3") } }
+      : {}),
+  });
+
+  const db = (env as Record<string, unknown>)[binding] as Database | undefined;
+  if (!db) {
+    await dispose();
+    throw new Error(
+      `No binding named "${binding}" in wrangler env. Add a d1_databases ` +
+        `entry to wrangler.jsonc, or pass { binding: "..." }.`
+    );
+  }
+  return { db, env: env as Record<string, unknown>, dispose };
+}
+
+interface WranglerCommon extends WranglerDatabaseOptions {
+  config: ContrailConfig;
+  /** Exact generated/pinned bundle for collections with `validate: true`. */
+  lexicons?: object[];
 }
 
 export interface BackfillAllViaWranglerOptions extends WranglerCommon {
@@ -55,24 +100,7 @@ async function withWrangler<T>(
   opts: WranglerCommon,
   fn: (contrail: Contrail, db: Database) => Promise<T>
 ): Promise<T> {
-  // Dynamic import so wrangler is only required when these helpers are
-  // actually called — keeps the main package usable in runtimes without it.
-  const { getPlatformProxy } = await import("wrangler");
-  const binding = opts.binding ?? "DB";
-
-  const { env, dispose } = await getPlatformProxy({
-    environment: opts.remote ? "production" : undefined,
-  });
-
-  const db = (env as Record<string, unknown>)[binding] as Database | undefined;
-  if (!db) {
-    await dispose();
-    throw new Error(
-      `No binding named "${binding}" in wrangler env. Add a d1_databases ` +
-        `entry to wrangler.jsonc, or pass { binding: "..." }.`
-    );
-  }
-
+  const { db, dispose } = await openWranglerDatabase(opts);
   try {
     const contrail = new Contrail({
       ...opts.config,

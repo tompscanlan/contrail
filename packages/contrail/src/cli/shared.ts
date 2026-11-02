@@ -10,7 +10,8 @@ import {
   loadLexiconBundle,
   CONFIG_CANDIDATES_MESSAGE,
 } from "../cli-config.js";
-import type { ContrailConfig } from "../core/types.js";
+import type { ContrailConfig, Database } from "../core/types.js";
+import { openWranglerDatabase } from "../workers/backfill.js";
 
 export interface ConfigOpts {
   config?: string;
@@ -20,9 +21,11 @@ export interface ConfigOpts {
 /**
  * Resolve and load a ContrailConfig from CLI options. Exits with code 1 if no
  * config file is found, since every command except `append-scheduled` needs one.
+ * A config exported as a function is called with `env`.
  */
 export async function resolveConfig(
   opts: ConfigOpts,
+  env: Record<string, unknown> = process.env,
 ): Promise<{ config: ContrailConfig; path: string }> {
   const root = opts.root ?? process.cwd();
   const path = findConfigFile(root, opts.config);
@@ -32,13 +35,62 @@ export async function resolveConfig(
         `  ${CONFIG_CANDIDATES_MESSAGE}`,
     );
   }
-  return { config: await loadConfig(path), path };
+  return { config: await loadConfig(path, env), path };
 }
 
 export async function resolveAndLoadConfig(
   opts: ConfigOpts,
+  env: Record<string, unknown> = process.env,
 ): Promise<ContrailConfig> {
-  return (await resolveConfig(opts)).config;
+  return (await resolveConfig(opts, env)).config;
+}
+
+export interface DatabaseOpts {
+  remote?: boolean;
+  binding?: string;
+  sqlite?: string;
+  persistTo?: string;
+}
+
+export interface OpenedDatabase {
+  db: Database;
+  /** What a config exported as a function receives: the Worker env for a
+   *  Wrangler binding, `process.env` for a SQLite file. */
+  env: Record<string, unknown>;
+  /** Names the database for log lines. */
+  where: string;
+  dispose(): Promise<void>;
+}
+
+/**
+ * Open the database a command writes: an explicit SQLite file, or a Wrangler
+ * D1 binding. Open it before loading the config, so a config exported as a
+ * function reads the same env as the Worker that serves this database.
+ */
+export async function openDatabase(opts: DatabaseOpts): Promise<OpenedDatabase> {
+  if (opts.sqlite && opts.remote) {
+    throw new Error("--sqlite cannot be combined with --remote");
+  }
+  if (opts.sqlite && opts.persistTo) {
+    throw new Error("--sqlite cannot be combined with --persist-to");
+  }
+  if (opts.sqlite) {
+    const { createSqliteDatabase } = await import("../adapters/sqlite.js");
+    return {
+      db: createSqliteDatabase(opts.sqlite),
+      env: process.env,
+      where: `SQLite ${opts.sqlite}`,
+      dispose: async () => {},
+    };
+  }
+  const binding = opts.binding ?? "DB";
+  const opened = await openWranglerDatabase(opts);
+  return {
+    ...opened,
+    where: opts.remote
+      ? `D1 binding ${binding} (production environment)`
+      : `local D1 binding ${binding} in ${opts.persistTo ?? ".wrangler/state"}`,
+  };
 }
 
 /** Load the standard generated/pinned bundle only when collection policy needs

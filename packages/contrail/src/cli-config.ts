@@ -66,11 +66,7 @@ export function configProjectRoot(path: string): string {
   return matches[0]?.root ?? dirname(target);
 }
 
-/** Load a config file via jiti — handles TS + ESM + CJS transparently,
- *  no tsx/ts-node hook required. Accepts either a named export `config` or
- *  a default export. Validates the result has the minimum `ContrailConfig`
- *  shape (`namespace` + `collections`) so misnamed exports throw at load
- *  time rather than producing confusing "undefined.namespace" errors later. */
+/** Find the standard generated/pinned Lexicon bundle under `root`. */
 export function findLexiconBundle(root: string): string | null {
   for (const candidate of LEXICON_BUNDLE_CANDIDATES) {
     const path = join(root, candidate);
@@ -94,12 +90,37 @@ export async function loadLexiconBundle(path: string): Promise<object[]> {
   return value as object[];
 }
 
-export async function loadConfig<T = ContrailConfig>(path: string): Promise<T> {
+/** A config exported as a function of the environment it runs against, so a
+ *  CLI run can read the settings the app reads. Commands that open a Wrangler
+ *  D1 binding call it with the Worker env wrangler built (wrangler.jsonc
+ *  `vars`, `.dev.vars` or `.env`, and the process env under
+ *  `CLOUDFLARE_INCLUDE_PROCESS_ENV`); other commands call it with
+ *  `process.env`. */
+export type ContrailConfigFactory<T = ContrailConfig> = (
+  env: Record<string, unknown>,
+) => T | Promise<T>;
+
+/** Load a config file via jiti — handles TS + ESM + CJS transparently,
+ *  no tsx/ts-node hook required. Accepts either a named export `config` or
+ *  a default export, as an object or a {@link ContrailConfigFactory} called
+ *  with `env`. Validates the result has the minimum `ContrailConfig` shape
+ *  (`namespace` + `collections`) so misnamed exports throw at load time rather
+ *  than producing confusing "undefined.namespace" errors later. */
+export async function loadConfig<T = ContrailConfig>(
+  path: string,
+  env: Record<string, unknown> = process.env,
+): Promise<T> {
   const jiti = createJiti(import.meta.url, { interopDefault: true });
   const mod = (await jiti.import(path)) as { config?: unknown; default?: unknown };
-  const config = mod.config ?? mod.default;
+  const exported = mod.config ?? mod.default;
+  const config =
+    typeof exported === "function"
+      ? await (exported as ContrailConfigFactory<unknown>)(env)
+      : exported;
   if (!config || typeof config !== "object") {
-    throw new Error(`Config at ${path} did not export a \`config\` object`);
+    throw new Error(
+      `Config at ${path} did not export a \`config\` object, or a function returning one`,
+    );
   }
   if (!("namespace" in config) || !("collections" in config)) {
     throw new Error(

@@ -195,4 +195,59 @@ describe("loadConfig", () => {
     const cfg = await loadConfig(path);
     expect(cfg).toEqual({ namespace: "js.example", collections: {} });
   });
+
+  it("calls a config exported as a function with the env it is given", async () => {
+    const path = join(root, "factory.config.ts");
+    writeFileSync(
+      path,
+      `export const config = (env: Record<string, unknown>) => ({
+         namespace: "com.example",
+         collections: {},
+         relays: [env.RELAY_URL],
+       });`
+    );
+    const cfg = await loadConfig<{ relays: unknown[] }>(path, {
+      RELAY_URL: "http://relay.test",
+    });
+    expect(cfg.relays).toEqual(["http://relay.test"]);
+  });
+
+  it("awaits a config function that returns a promise", async () => {
+    const path = join(root, "async-factory.config.ts");
+    writeFileSync(
+      path,
+      `export default async (env: Record<string, unknown>) => ({
+         namespace: env.NAMESPACE,
+         collections: {},
+       });`
+    );
+    const cfg = await loadConfig<{ namespace: unknown }>(path, {
+      NAMESPACE: "com.async",
+    });
+    expect(cfg.namespace).toBe("com.async");
+  });
+
+  it("gives a config function process.env when no env is passed", async () => {
+    const path = join(root, "process-env.config.ts");
+    writeFileSync(
+      path,
+      `export const config = (env: Record<string, unknown>) => ({
+         namespace: env.CONTRAIL_LOAD_CONFIG_TEST,
+         collections: {},
+       });`
+    );
+    process.env.CONTRAIL_LOAD_CONFIG_TEST = "com.process";
+    try {
+      const cfg = await loadConfig<{ namespace: unknown }>(path);
+      expect(cfg.namespace).toBe("com.process");
+    } finally {
+      delete process.env.CONTRAIL_LOAD_CONFIG_TEST;
+    }
+  });
+
+  it("throws when a config function returns no config", async () => {
+    const path = join(root, "empty-factory.config.ts");
+    writeFileSync(path, `export const config = () => undefined;`);
+    await expect(loadConfig(path, {})).rejects.toThrow(/or a function returning one/);
+  });
 });

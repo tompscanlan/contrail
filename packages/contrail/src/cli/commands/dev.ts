@@ -25,6 +25,7 @@ import {
 import {
   confirmUnresolvedLexicons,
   promptYesNo,
+  resolveAndLoadConfig,
   resolveConfig,
   resolveValidationLexicons,
 } from "../shared.js";
@@ -135,13 +136,19 @@ async function serveFetchResponse(
   }
 }
 
-async function runWranglerDev(
-  options: DevOpts,
-  config: ContrailConfig,
-  lexicons?: object[],
-) {
+async function runWranglerDev(options: DevOpts) {
   const { getPlatformProxy } = await import("wrangler");
   const { env, dispose } = await getPlatformProxy();
+  let config: ContrailConfig;
+  let lexicons: object[] | undefined;
+  try {
+    // A config exported as a function reads the Worker env, as `wrangler dev` will.
+    config = await resolveAndLoadConfig(options, env as Record<string, unknown>);
+    lexicons = await resolveValidationLexicons(options, config);
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
   const db = (env as Record<string, unknown>)[options.binding] as
     Database | undefined;
 
@@ -429,8 +436,6 @@ export function registerDev(cli: CAC): void {
     )
     .option("--allow-partial", "Accept reported Alluvium historical omissions")
     .action(async (options: DevOpts) => {
-      const resolved = await resolveConfig(options);
-      const input = resolved.config;
       const wrangler =
         options.wrangler === true ||
         (!options.sqlite &&
@@ -442,13 +447,10 @@ export function registerDev(cli: CAC): void {
             "--alluvium dev currently uses SQLite; pass --sqlite or run the D1 backfill command first",
           );
         }
-        await runWranglerDev(
-          options,
-          input,
-          await resolveValidationLexicons(options, input),
-        );
+        await runWranglerDev(options);
       } else {
-        await runSqliteDev(options, input, configProjectRoot(resolved.path));
+        const resolved = await resolveConfig(options);
+        await runSqliteDev(options, resolved.config, configProjectRoot(resolved.path));
       }
     });
 }

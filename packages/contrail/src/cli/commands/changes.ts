@@ -3,6 +3,7 @@ import { Contrail } from "../../contrail.js";
 import { getChangeLogCostPlan } from "../../core/change-log.js";
 import type { Database } from "../../core/types.js";
 import {
+  openDatabase,
   resolveAndLoadConfig,
   resolveValidationLexicons,
 } from "../shared.js";
@@ -13,6 +14,7 @@ interface ChangeCommandOptions {
   remote?: boolean;
   binding: string;
   sqlite?: string;
+  persistTo?: string;
   json?: boolean;
   through?: string;
   reason?: string;
@@ -25,30 +27,11 @@ async function withChangesDatabase<T>(
   options: ChangeCommandOptions,
   callback: (contrail: Contrail, db: Database) => Promise<T>,
 ): Promise<T> {
-  if (options.sqlite && options.remote) {
-    throw new Error("--sqlite cannot be combined with --remote");
-  }
-  const config = await resolveAndLoadConfig(options);
-  const lexicons = await resolveValidationLexicons(options, config);
-  const contrail = new Contrail({ ...config, lexicons });
-  if (options.sqlite) {
-    const { createSqliteDatabase } = await import("../../adapters/sqlite.js");
-    const db = createSqliteDatabase(options.sqlite);
-    await contrail.init(db);
-    return callback(contrail, db);
-  }
-
-  const { getPlatformProxy } = await import("wrangler");
-  const { env, dispose } = await getPlatformProxy({
-    environment: options.remote ? "production" : undefined,
-  });
-  const binding = options.binding ?? "DB";
-  const db = (env as Record<string, unknown>)[binding] as Database | undefined;
-  if (!db) {
-    await dispose();
-    throw new Error(`No binding named "${binding}" in wrangler env`);
-  }
+  const { db, env, dispose } = await openDatabase(options);
   try {
+    const config = await resolveAndLoadConfig(options, env);
+    const lexicons = await resolveValidationLexicons(options, config);
+    const contrail = new Contrail({ ...config, lexicons });
     await contrail.init(db);
     return await callback(contrail, db);
   } finally {
@@ -67,6 +50,10 @@ function options(command: ReturnType<CAC["command"]>) {
     .option(
       "--sqlite <path>",
       "Use a local SQLite database instead of a Wrangler D1 binding",
+    )
+    .option(
+      "--persist-to <dir>",
+      "Local D1 state directory, as wrangler dev --persist-to (default: .wrangler/state)",
     );
 }
 
